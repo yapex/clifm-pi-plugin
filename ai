@@ -65,6 +65,7 @@ fi
 MODE="chat"
 USE_TOOLS=false
 SELECTED_FILES=""
+GEN_QUERY=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -77,6 +78,11 @@ while [ $# -gt 0 ]; do
             MODE="gen"
             USE_TOOLS=true
             shift
+            # Collect remaining args as the query
+            if [ $# -gt 0 ]; then
+                GEN_QUERY="$*"
+                break
+            fi
             ;;
         history)
             HISTORY_FILE="${HOME}/.config/clifm/ai_history.log"
@@ -318,7 +324,14 @@ print_sep() {
 if [ "$MODE" = "sel" ]; then
     query=$(gum input --value "解释一下" --header "🤖 Ask about selected files")
 elif [ "$MODE" = "gen" ]; then
-    query=$(gum input --value "" --header "🤖 Generate shell command")
+    # Gen mode: use command line query directly
+    if [ -n "$GEN_QUERY" ]; then
+        query="$GEN_QUERY"
+    else
+        print_error "Usage: ai gen <command description>"
+        echo "Example: ai gen 列出所有 .md 文件"
+        exit 1
+    fi
 else
     query=$(gum input --value "解释一下" --header "🤖 Ask AI")
 fi
