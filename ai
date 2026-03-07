@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 
 # CLIFM AI Query Plugin
-# Usage: In clifm, type 'ai' to trigger
+# Usage: 
+#   ai           - Start AI conversation
+#   ai sel       - Analyze selected files
+#   ai sel code  - Analyze selected files (code mode, no file tools)
+# Uses pi RPC mode for persistent session
 
 set -e
 
-# Check if fzf is available
-if ! command -v fzf &> /dev/null; then
-    echo "Error: fzf is not installed. Please install fzf first."
+# Check dependencies
+if ! command -v gum &> /dev/null; then
+    echo "Error: gum is not installed. Run: brew install gum"
     exit 1
 fi
 
-# Check if pi is available
 if ! command -v pi &> /dev/null; then
-    echo "Error: pi is not installed. Please install pi first."
+    echo "Error: pi is not installed."
     exit 1
 fi
 
@@ -26,50 +29,179 @@ else
     CLIP_CMD=""
 fi
 
-# Step 1: Get user input using fzf
-query=$(echo "" | fzf \
-    --prompt="Ask AI: " \
-    --height=40% \
-    --border=rounded \
-    --header="Type your question and press Enter" \
-    --print-query \
-    --no-sort \
-    | tail -n 1)
+# Parse arguments
+MODE="chat"
+USE_TOOLS=false
 
-# Step 2: Exit if empty
+while [ $# -gt 0 ]; do
+    case "$1" in
+        sel)
+            MODE="sel"
+            USE_TOOLS=true  # sel mode needs read tool
+            shift
+            ;;
+        *)
+            shift
+            ;;
+    esac
+done
+
+# Build context based on mode
+build_context() {
+    local context=""
+    
+    if [ "$MODE" = "sel" ]; then
+        if [ -f "$CLIFM_SELFILE" ] && [ -s "$CLIFM_SELFILE" ]; then
+            context="Current directory: $PWD\n\nSelected files:\n"
+            while IFS= read -r file; do
+                if [ -e "$file" ]; then
+                    context="$context\n--- $file ---\n"
+                    if [ -f "$file" ]; then
+                        # Include file content for text files
+                        if file "$file" | grep -q "text\|JSON\|empty"; then
+                            context="$context$(cat "$file" 2>/dev/null || echo "[Unable to read file]")"
+                        else
+                            context="$context[Binary file: $(file "$file" | cut -d: -f2)]"
+                        fi
+                    elif [ -d "$file" ]; then
+                        context="$context[Directory: $(ls -la "$file" 2>/dev/null | head -20)]"
+                    fi
+                    context="$context\n"
+                fi
+            done < "$CLIFM_SELFILE"
+        else
+            echo "No files selected. Use 's' to select files first." >&2
+            exit 1
+        fi
+    fi
+    
+    echo "$context"
+}
+
+# Create temp directory for fifos
+FIFO_DIR=$(mktemp -d)
+FIFO_IN="$FIFO_DIR/pi_in"
+FIFO_OUT="$FIFO_DIR/pi_out"
+mkfifo "$FIFO_IN"
+mkfifo "$FIFO_OUT"
+
+# Cleanup on exit
+cleanup() {
+    kill $PI_PID 2>/dev/null || true
+    rm -rf "$FIFO_DIR"
+}
+trap cleanup EXIT
+
+# Start pi in RPC mode
+if [ "$USE_TOOLS" = true ]; then
+    # sel mode: only read tool, no modifications
+    pi --mode rpc --tools read < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
+else
+    pi --mode rpc --no-tools < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
+fi
+PI_PID=$!
+
+# Open file descriptors
+exec 3>"$FIFO_IN"
+exec 4<"$FIFO_OUT"
+
+# Read events from pi, accumulate text, return on agent_end
+read_response() {
+    local text=""
+    while IFS= read -r line <&4; do
+        event=$(echo "$line" | jq -r '.type' 2>/dev/null || echo "")
+        
+        if [ "$event" = "message_update" ]; then
+            delta_type=$(echo "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
+            if [ "$delta_type" = "text_delta" ]; then
+                delta=$(echo "$line" | jq -r '.assistantMessageEvent.delta' 2>/dev/null || echo "")
+                text="${text}${delta}"
+                echo -n "$delta"
+            fi
+        elif [ "$event" = "agent_end" ]; then
+            echo ""
+            break
+        fi
+    done
+    
+    RESPONSE="$text"
+}
+
+# Send command to pi
+send_cmd() {
+    echo "$1" >&3
+}
+
+# Escape string for JSON
+json_escape() {
+    # Escape backslashes, double quotes, and control characters
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' '\a' | sed 's/\a/\\n/g'
+}
+
+# Get initial context
+CONTEXT=$(build_context)
+
+# First query
+if [ "$MODE" = "sel" ]; then
+    query=$(gum input --placeholder "What do you want to know about these files?" --header "🤖 Analyzing selected files")
+    # Prepend context to first query
+    if [ -n "$query" ]; then
+        full_query="Context:\n$CONTEXT\n\nQuestion: $query"
+    fi
+else
+    query=$(gum input --placeholder "Ask AI..." --header "🤖 Enter your question")
+    full_query="$query"
+fi
+
 if [ -z "$query" ]; then
-    echo "No query provided. Exiting."
     exit 0
 fi
 
-# Step 3: Execute pi command and capture output
-echo "Querying AI..."
-response=$(pi -p "$query" 2>&1)
+# Send first prompt
+clear
+echo "🤔 Querying AI..."
+escaped_query=$(json_escape "$full_query")
+send_cmd "{\"type\":\"prompt\",\"message\":\"$escaped_query\"}"
 
-# Step 4: Display result in fzf preview with copy support
-if [ -n "$CLIP_CMD" ]; then
-    echo "$response" | fzf \
-        --preview="echo {}" \
-        --preview-window=up:80%:wrap \
-        --prompt="AI Response | " \
-        --header="Ctrl+C: copy selected | Ctrl+A: copy all | Esc: quit" \
-        --height=90% \
-        --border=rounded \
-        --bind="ctrl-c:execute-silent(echo -n {} | $CLIP_CMD)+reload(echo 'Copied!')" \
-        --bind="ctrl-a:execute-silent(echo \"$response\" | $CLIP_CMD)+reload(echo 'All copied!')" \
-        --bind="esc:abort" \
-        --no-sort \
-        --no-multi
-else
-    # No clipboard support, just display
-    echo "$response" | fzf \
-        --preview="echo {}" \
-        --preview-window=up:80%:wrap \
-        --prompt="AI Response | " \
-        --header="Esc: quit" \
-        --height=90% \
-        --border=rounded \
-        --bind="esc:abort" \
-        --no-sort \
-        --no-multi
-fi
+# Read response (streaming)
+RESPONSE=""
+read_response
+
+# Main loop
+while true; do
+    clear
+    gum style --border double --margin "1 0" --padding "0 2" "📝 $query"
+    echo ""
+    echo "$RESPONSE" | gum format
+    echo ""
+    gum style --foreground 240 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    
+    # Direct input for follow-up
+    query=$(gum input --placeholder "Ask more... (Esc to exit)" --header "🤖")
+    
+    if [ -z "$query" ]; then
+        if [ -n "$CLIP_CMD" ]; then
+            action=$(echo -e "📋 Copy to clipboard\n❌ Exit" | gum choose --header="Action")
+            case "$action" in
+                "📋 Copy to clipboard")
+                    echo "$RESPONSE" | $CLIP_CMD
+                    gum style --foreground green "✓ Copied!"
+                    sleep 0.5
+                    continue
+                    ;;
+                "❌ Exit")
+                    exit 0
+                    ;;
+            esac
+        else
+            exit 0
+        fi
+    else
+        echo "🤔 Querying AI..."
+        escaped_query=$(json_escape "$query")
+        send_cmd "{\"type\":\"prompt\",\"message\":\"$escaped_query\"}"
+        RESPONSE=""
+        read_response
+    fi
+done
