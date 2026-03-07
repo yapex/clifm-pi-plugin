@@ -273,8 +273,17 @@ read_response() {
                 # Clear progress indicator
                 printf "\r\033[K"
 
+                # Debug: show raw response
+                # printf "DEBUG: %s\n" "$line" >&2
+
                 # Extract final assistant message from messages array
                 text=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text' 2>/dev/null || printf '')
+                
+                # If text is null, try alternative paths
+                if [ "$text" = "null" ] || [ -z "$text" ]; then
+                    text=$(printf '%s' "$line" | jq -r '.messages[-1].content | if type == "array" then .[0].text else .text end' 2>/dev/null || printf '')
+                fi
+                
                 echo ""
                 break
                 ;;
@@ -349,7 +358,7 @@ if [ -n "$RESPONSE" ] && [ "$MODE" != "gen" ]; then
 fi
 
 # Handle gen mode: extract and optionally execute command
-if [ "$MODE" = "gen" ] && [ -n "$RESPONSE" ]; then
+if [ "$MODE" = "gen" ] && [ -n "$RESPONSE" ] && [ "$RESPONSE" != "null" ]; then
     # Extract just the command (first line, remove code blocks if any)
     CMD=$(echo "$RESPONSE" | sed 's/```//g' | head -1 | xargs)
     if [ -n "$CMD" ]; then
@@ -363,6 +372,10 @@ if [ "$MODE" = "gen" ] && [ -n "$RESPONSE" ]; then
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             eval "$CMD"
         fi
+    else
+        print_warning "No command could be extracted from response"
+        echo "Raw response:"
+        echo "$RESPONSE"
     fi
     exit 0
 fi
