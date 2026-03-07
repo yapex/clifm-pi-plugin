@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/opt/homebrew/bin/bash
 
 # CLIFM PI Plugin
 # Usage: 
@@ -152,18 +152,13 @@ print_sep() {
     printf "\033[90m%s\033[0m\n" "──────────────────────────────────────────────────────────"
 }
 
-# First query - use readline input
+# First query - use readline input with default value
 if [ "$MODE" = "sel" ]; then
     echo ""
-    read -e -p "🤖 Ask about selected files: " query
+    read -e -p "🤖 Ask about selected files: " -i "解释一下" query
 else
     echo ""
-    read -e -p "🤖 Ask AI: " query
-fi
-
-# Default to "解释一下" if empty
-if [ -z "$query" ]; then
-    query="解释一下"
+    read -e -p "🤖 Ask AI: " -i "解释一下" query
 fi
 
 if [ -z "$query" ]; then
