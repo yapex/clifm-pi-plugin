@@ -22,41 +22,34 @@
 ## 安装
 
 ```bash
+# 1. 创建插件链接
 ln -sf ~/workspace/clifm-ai-plugin/ai ~/.config/clifm/plugins/ai
 chmod +x ~/workspace/clifm-ai-plugin/ai
+
+# 2. 创建 actions 配置
+echo "ai /Users/yapex/.config/clifm/plugins/ai" >> ~/.config/clifm/actions
+```
+
+或者手动编辑 `~/.config/clifm/actions`：
+```
+ai /Users/yapex/.config/clifm/plugins/ai
 ```
 
 ## 使用
 
 ### 普通对话
-
-在 clifm 中输入：
 ```
 ai
 ```
 
 ### 分析选中的文件
-
-1. 先用 `s` 选择文件（可多选）
-2. 然后输入：
 ```
-ai sel
+s file1.py file2.py    # 先选择文件
+ai sel                 # 启动 AI 分析
 ```
-
-AI 会读取选中文件的内容，你可以询问关于这些文件的问题。
 
 ## 交互
 
-- 输入问题 → AI 回答
+- 输入框默认显示 `解释一下`，可直接发送或继续补充
 - 继续输入 → 追问（上下文保持）
 - 按 Esc → 显示菜单（复制/退出）
-
-## 示例
-
-```
-# 在 clifm 中
-s file1.py file2.py    # 选择文件
-ai sel                 # 启动 AI 分析
-> 这两个文件有什么区别？
-> 帮我重构一下 file1.py
-```
