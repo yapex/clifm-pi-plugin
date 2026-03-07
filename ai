@@ -155,10 +155,15 @@ print_sep() {
 # First query - use readline input
 if [ "$MODE" = "sel" ]; then
     echo ""
-    read -e -p "🤖 Ask about selected files: " -i "解释一下" query
+    read -e -p "🤖 Ask about selected files: " query
 else
     echo ""
-    read -e -p "🤖 Ask AI: " -i "解释一下" query
+    read -e -p "🤖 Ask AI: " query
+fi
+
+# Default to "解释一下" if empty
+if [ -z "$query" ]; then
+    query="解释一下"
 fi
 
 if [ -z "$query" ]; then
