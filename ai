@@ -5,11 +5,15 @@
 #   ai           - Start AI conversation
 #   ai sel       - Analyze selected files
 # Uses pi RPC mode for persistent session
-# No external UI dependencies - uses readline and terminal output
 
 set -e
 
 # Check dependencies
+if ! command -v gum &> /dev/null; then
+    echo "Error: gum is not installed. Run: brew install gum"
+    exit 1
+fi
+
 if ! command -v pi &> /dev/null; then
     echo "Error: pi is not installed."
     exit 1
@@ -27,6 +31,7 @@ fi
 # Parse arguments
 MODE="chat"
 USE_TOOLS=false
+SELECTED_FILES=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -36,27 +41,49 @@ while [ $# -gt 0 ]; do
             shift
             ;;
         *)
+            # If argument is a file path, treat it as selected file
+            if [ -e "$1" ]; then
+                SELECTED_FILES="$SELECTED_FILES$1"$'\n'
+            fi
             shift
             ;;
     esac
 done
 
+# If we got files as arguments, switch to sel mode
+if [ -n "$SELECTED_FILES" ]; then
+    MODE="sel"
+    USE_TOOLS=true
+fi
+
 # Build context file for sel mode
 CONTEXT_FILE=""
 if [ "$MODE" = "sel" ]; then
-    if [ ! -f "$CLIFM_SELFILE" ] || [ ! -s "$CLIFM_SELFILE" ]; then
+    # Determine source of selected files
+    if [ -n "$SELECTED_FILES" ]; then
+        # Files passed as arguments
+        FILE_LIST="$SELECTED_FILES"
+    elif [ -f "$CLIFM_SELFILE" ] && [ -s "$CLIFM_SELFILE" ]; then
+        # Files from CLIFM_SELFILE
+        FILE_LIST=$(cat "$CLIFM_SELFILE")
+    else
         echo "No files selected. Use 's' to select files first."
         exit 1
     fi
-    
+
     CONTEXT_FILE=$(mktemp)
     {
         echo "Current directory: $PWD"
         echo ""
         echo "Selected files:"
         echo ""
-        
+
         while IFS= read -r file; do
+            # Handle relative paths
+            if [ ! -e "$file" ] && [ -e "$PWD/$file" ]; then
+                file="$PWD/$file"
+            fi
+
             if [ -e "$file" ]; then
                 echo "--- $file ---"
                 if [ -f "$file" ]; then
@@ -70,8 +97,12 @@ if [ "$MODE" = "sel" ]; then
                     ls -la "$file" 2>/dev/null | head -20
                 fi
                 echo ""
+            else
+                echo "--- $file ---"
+                echo "[File not found]"
+                echo ""
             fi
-        done < "$CLIFM_SELFILE"
+        done <<< "$FILE_LIST"
     } > "$CONTEXT_FILE"
 fi
 
@@ -105,41 +136,65 @@ exec 4<"$FIFO_OUT"
 # Read events from pi with streaming display
 read_response() {
     local text=""
-    
-    while IFS= read -r line <&4; do
+    local char_count=0
+    local spinner="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    local spinner_idx=0
+
+    while IFS= read -r -t 60 line <&4; do
         # Skip non-JSON lines
-        if ! echo "$line" | jq -e . >/dev/null 2>&1; then
+        if ! printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
             continue
         fi
-        
-        event=$(echo "$line" | jq -r '.type' 2>/dev/null || echo "")
-        
+
+        event=$(printf '%s' "$line" | jq -r '.type' 2>/dev/null || echo "")
+
         case "$event" in
             "tool_execution_start")
-                tool_name=$(echo "$line" | jq -r '.toolName')
-                echo "🔧 $tool_name"
+                tool_name=$(printf '%s' "$line" | jq -r '.toolName')
+                gum style --foreground 214 "🔧 $tool_name"
                 ;;
             "tool_execution_end")
-                echo "✓"
+                gum style --foreground 2 "✓"
                 ;;
             "message_update")
-                delta_type=$(echo "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
+                delta_type=$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
                 case "$delta_type" in
                     "text_delta")
-                        delta=$(echo "$line" | jq -r '.assistantMessageEvent.delta' 2>/dev/null || echo "")
-                        text="${text}${delta}"
-                        printf "%s" "$delta"
+                        # Extract text from partial field (accumulated text with newlines)
+                        text=$(printf '%s' "$line" | jq -j '.assistantMessageEvent.partial.content[0].text' 2>/dev/null || printf '')
+                        char_count=${#text}
+
+                        # Show progress indicator
+                        spinner_idx=$(( (spinner_idx + 1) % 10 ))
+                        local spin_char="${spinner:spinner_idx:1}"
+                        printf "\r\033[90m%s Receiving: %d chars...\033[0m" "$spin_char" "$char_count"
                         ;;
                 esac
                 ;;
             "agent_end")
+                # Clear progress indicator
+                printf "\r\033[K"
+
+                # Extract final assistant message from messages array
+                text=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text' 2>/dev/null || printf '')
                 echo ""
                 break
                 ;;
         esac
     done
-    
+
     RESPONSE="$text"
+
+    # Render with gum format using temp file
+    if [ -n "$RESPONSE" ]; then
+        echo ""
+        print_sep
+        echo ""
+        local md_file=$(mktemp)
+        printf '%s\n' "$RESPONSE" > "$md_file"
+        gum format -t markdown < "$md_file"
+        rm -f "$md_file"
+    fi
 }
 
 # Send command to pi
@@ -149,16 +204,14 @@ send_cmd() {
 
 # Print separator
 print_sep() {
-    printf "\033[90m%s\033[0m\n" "──────────────────────────────────────────────────────────"
+    gum style --foreground 240 "──────────────────────────────────────────────────────────"
 }
 
-# First query - use readline input with default value
+# First query - use gum input with default value
 if [ "$MODE" = "sel" ]; then
-    echo ""
-    read -e -p "🤖 Ask about selected files: " -i "解释一下" query
+    query=$(gum input --value "解释一下" --header "🤖 Ask about selected files")
 else
-    echo ""
-    read -e -p "🤖 Ask AI: " -i "解释一下" query
+    query=$(gum input --value "解释一下" --header "🤖 Ask AI")
 fi
 
 if [ -z "$query" ]; then
@@ -166,8 +219,7 @@ if [ -z "$query" ]; then
 fi
 
 # Send first prompt
-echo ""
-echo "🤔 Querying AI..."
+gum style --foreground 214 "🤔 Querying AI..."
 echo ""
 
 if [ "$MODE" = "sel" ] && [ -n "$CONTEXT_FILE" ]; then
@@ -187,21 +239,15 @@ while true; do
     echo ""
     print_sep
     echo ""
-    read -e -p "🤖 Ask more (empty to exit): " query
+    
+    query=$(gum input --placeholder "Ask more... (empty to exit)" --header "🤖")
     
     if [ -z "$query" ]; then
-        if [ -n "$CLIP_CMD" ] && [ -n "$RESPONSE" ]; then
-            read -e -p "Copy to clipboard? [y/N]: " copy_choice
-            if [ "$copy_choice" = "y" ] || [ "$copy_choice" = "Y" ]; then
-                echo "$RESPONSE" | $CLIP_CMD
-                echo "✓ Copied!"
-            fi
-        fi
         exit 0
     fi
     
     echo ""
-    echo "🤔 Querying AI..."
+    gum style --foreground 214 "🤔 Querying AI..."
     echo ""
     cmd=$(jq -n -c --arg q "$query" '{"type":"prompt","message":$q}')
     send_cmd "$cmd"
