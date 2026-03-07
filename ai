@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+
+# CLIFM AI Query Plugin
+# Usage: In clifm, type 'ai' to trigger
+
+set -e
+
+# Check if fzf is available
+if ! command -v fzf &> /dev/null; then
+    echo "Error: fzf is not installed. Please install fzf first."
+    exit 1
+fi
+
+# Check if pi is available
+if ! command -v pi &> /dev/null; then
+    echo "Error: pi is not installed. Please install pi first."
+    exit 1
+fi
+
+# Detect clipboard command
+if command -v pbcopy &> /dev/null; then
+    CLIP_CMD="pbcopy"
+elif command -v xclip &> /dev/null; then
+    CLIP_CMD="xclip -selection clipboard"
+else
+    CLIP_CMD=""
+fi
+
+# Step 1: Get user input using fzf
+query=$(echo "" | fzf \
+    --prompt="Ask AI: " \
+    --height=40% \
+    --border=rounded \
+    --header="Type your question and press Enter" \
+    --print-query \
+    --no-sort \
+    | tail -n 1)
+
+# Step 2: Exit if empty
+if [ -z "$query" ]; then
+    echo "No query provided. Exiting."
+    exit 0
+fi
+
+# Step 3: Execute pi command and capture output
+echo "Querying AI..."
+response=$(pi -p "$query" 2>&1)
+
+# Step 4: Display result in fzf preview with copy support
+if [ -n "$CLIP_CMD" ]; then
+    echo "$response" | fzf \
+        --preview="echo {}" \
+        --preview-window=up:80%:wrap \
+        --prompt="AI Response | " \
+        --header="Ctrl+C: copy selected | Ctrl+A: copy all | Esc: quit" \
+        --height=90% \
+        --border=rounded \
+        --bind="ctrl-c:execute-silent(echo -n {} | $CLIP_CMD)+reload(echo 'Copied!')" \
+        --bind="ctrl-a:execute-silent(echo \"$response\" | $CLIP_CMD)+reload(echo 'All copied!')" \
+        --bind="esc:abort" \
+        --no-sort \
+        --no-multi
+else
+    # No clipboard support, just display
+    echo "$response" | fzf \
+        --preview="echo {}" \
+        --preview-window=up:80%:wrap \
+        --prompt="AI Response | " \
+        --header="Esc: quit" \
+        --height=90% \
+        --border=rounded \
+        --bind="esc:abort" \
+        --no-sort \
+        --no-multi
+fi
