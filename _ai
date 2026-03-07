@@ -8,8 +8,8 @@ _ai_complete() {
     
     # Complete files after ai command (before prompt)
     if [ "$last_word" = "ai" ]; then
-        # Suggest gen and sel subcommands
-        compadd gen sel
+        # Suggest gen subcommand
+        compadd gen
         
         # Complete file names
         files=($(compgen -f -- "$current_word"))

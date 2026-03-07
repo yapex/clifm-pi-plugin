@@ -79,6 +79,16 @@ ln -sf "$SCRIPT_DIR/ai" "$PLUGINS_DIR/ai"
 # Make sure the script is executable
 chmod +x "$SCRIPT_DIR/ai"
 
+# Install fzf helper if fzf is available
+if command -v fzf >/dev/null 2>&1; then
+    if [ -f "$SCRIPT_DIR/ai-fzf" ]; then
+        chmod +x "$SCRIPT_DIR/ai-fzf"
+        # Create alias in plugins dir
+        ln -sf "$SCRIPT_DIR/ai-fzf" "$PLUGINS_DIR/ai-fzf" 2>/dev/null || true
+        echo -e "${GREEN}✓ FZF helper installed (use 'ai-fzf' for interactive mode)${NC}"
+    fi
+fi
+
 # Install zsh completion
 COMPLETION_DIR="$HOME/.zsh/completions"
 if [ ! -d "$COMPLETION_DIR" ]; then

@@ -1,21 +1,19 @@
 #!/opt/homebrew/bin/bash
 
 # CLIFM PI Plugin
-# Usage: 
+# Usage: ai [options] [files] [query]
 #   ai file1 file2 解释这些文件
 #   ai gen 查找所有 .md 文件
-#   ai 解释一下什么是 bash
+#   ai -c 解释剪贴板内容
 
 set -e
 
 # Colors
-if type tput >/dev/null 2>&1; then
+[ -t 1 ] && {
     RESET="$(tput sgr0)"
     RED="$(tput setaf 1)"
     BLUE="$(tput setaf 4)"
-else
-    RESET="" RED="" BLUE=""
-fi
+} || { RESET=""; RED=""; BLUE=""; }
 
 print_error() { printf "%s%s%s\n" "$RED" "$@" "$RESET" >&2; }
 print_info() { printf "%s%s%s\n" "$BLUE" "$@" "$RESET"; }
@@ -23,181 +21,163 @@ print_info() { printf "%s%s%s\n" "$BLUE" "$@" "$RESET"; }
 # Check dependencies
 command -v pi >/dev/null || { print_error "pi not installed"; exit 1; }
 
+# Usage helper
+usage() {
+    echo "Usage:"
+    echo "  ai file1 file2 解释这些文件"
+    echo "  ai gen 查找所有 .md 文件"
+    echo "  ai -c 解释剪贴板内容"
+    echo ""
+    echo "Options:"
+    echo "  -c, --clipboard  使用剪贴板内容作为上下文"
+    echo "  -h, --help       显示帮助"
+}
+
 # Parse arguments
 MODE="chat"
 FILES=()
 QUERY=""
+USE_CLIPBOARD=false
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        gen)
-            MODE="gen"
+        gen)       MODE="gen"; QUERY="${*:2}"; break ;;
+        -c|--clipboard)
+            USE_CLIPBOARD=true
             shift
+            # After -c, check if next arg is file or query
+            if [ $# -gt 0 ]; then
+                if [ -e "$1" ]; then
+                    FILES+=("$1")
+                elif [ -e "$PWD/$1" ]; then
+                    FILES+=("$PWD/$1")
+                else
+                    QUERY="$*"
+                    break
+                fi
+            fi
+            ;;
+        -h|--help)  usage; exit ;;
+        -*)
             QUERY="$*"
             break
             ;;
-        -h|--help)
-            echo "Usage:"
-            echo "  ai file1 file2 解释这些文件"
-            echo "  ai gen 查找所有 .md 文件"  
-            echo "  ai 解释一下什么是 bash"
-            exit 0
-            ;;
         *)
-            # Check if it's an existing file
             if [ -e "$1" ]; then
-                if [ -e "$PWD/$1" ]; then
-                    FILES+=("$PWD/$1")
-                else
-                    FILES+=("$1")
-                fi
+                FILES+=("$1")
+            elif [ -e "$PWD/$1" ]; then
+                FILES+=("$PWD/$1")
             else
-                # Not a file, it's part of the query
                 QUERY="$*"
                 break
             fi
-            shift
             ;;
     esac
+    shift
 done
 
-# If no files from args, check CLIFM_SELFILE
-if [ ${#FILES[@]} -eq 0 ] && [ -f "$CLIFM_SELFILE" ] && [ -s "$CLIFM_SELFILE" ]; then
+# Read clipboard
+CLIPBOARD_CONTENT=""
+if [ "$USE_CLIPBOARD" = true ]; then
+    CLIPBOARD_CONTENT=$(pbpaste 2>/dev/null || xclip -selection clipboard -o 2>/dev/null || xsel --clipboard -o 2>/dev/null || echo "")
+fi
+
+# Check CLIFM_SELFILE
+if [ ${#FILES[@]} -eq 0 ] && [ -s "$CLIFM_SELFILE" ]; then
     while IFS= read -r f; do
-        if [ -e "$f" ]; then
-            FILES+=("$f")
-        elif [ -e "$PWD/$f" ]; then
-            FILES+=("$PWD/$f")
-        fi
+        [ -e "$f" ] && FILES+=("$f") || [ -e "$PWD/$f" ] && FILES+=("$PWD/$f")
     done < "$CLIFM_SELFILE"
 fi
 
-if [ -z "$QUERY" ]; then
-    echo "Usage:"
-    echo "  ai file1 file2 解释这些文件"
-    echo "  ai gen 查找所有 .md 文件"  
-    echo "  ai 解释一下什么是 bash"
-    exit 0
-fi
+[ -z "$QUERY" ] && { usage; exit 0; }
 
-# Build prompt using template file
+# Build context
+CONTEXT="📂 当前工作目录: $PWD"
+[ -n "$CLIPBOARD_CONTENT" ] && CONTEXT="$CONTEXT
+
+📋 剪贴板内容:
+\`\`\`
+$CLIPBOARD_CONTENT
+\`\`\`"
+
+# Build prompt
 TEMP_PROMPT=$(mktemp)
 
 if [ ${#FILES[@]} -gt 0 ]; then
     MODE="sel"
     {
-        printf '%s\n' "请分析以下文件内容，然后回答问题。"
-        printf '\n'
+        echo "$CONTEXT"
+        echo ""
+        echo "请分析以下文件内容，然后回答问题。"
+        echo ""
         for f in "${FILES[@]}"; do
-            if [ -f "$f" ]; then
-                printf '%s\n' "--- $f ---"
-                cat "$f" 2>/dev/null || printf '%s\n' "[无法读取]"
-                printf '\n'
-            fi
+            [ -f "$f" ] && { echo "--- $f ---"; cat "$f"; echo ""; }
         done
-        printf '%s\n' "---"
-        printf '%s\n' "问题: $QUERY"
+        echo "---"
+        echo "问题: $QUERY"
     } > "$TEMP_PROMPT"
 elif [ "$MODE" = "gen" ]; then
     {
-        printf '%s\n' "$QUERY"
-        printf '\n'
-        printf '%s\n' "只输出命令，不要解释。"
+        echo "$CONTEXT"
+        echo ""
+        echo "$QUERY"
+        echo ""
+        echo "只输出命令，不要解释。"
     } > "$TEMP_PROMPT"
 else
-    printf '%s\n' "$QUERY" > "$TEMP_PROMPT"
+    echo -e "$CONTEXT\n\n$QUERY" > "$TEMP_PROMPT"
 fi
 
-# Build the prompt message
-if [ "$MODE" = "sel" ]; then
-    MSG=$(cat "$TEMP_PROMPT")
-elif [ "$MODE" = "gen" ]; then
-    MSG=$(cat "$TEMP_PROMPT")
-else
-    MSG=$(cat "$TEMP_PROMPT")
-fi
-
+MSG=$(cat "$TEMP_PROMPT")
 rm -f "$TEMP_PROMPT"
 
-# Cleanup function
-cleanup() {
-    kill $PI_PID 2>/dev/null || true
-    rm -rf "$FIFO_DIR"
-}
-trap cleanup EXIT
-
-# Create fifos for RPC mode
+# Start pi
 FIFO_DIR=$(mktemp -d)
+trap 'kill $PI_PID 2>/dev/null; rm -rf "$FIFO_DIR"' EXIT
 mkfifo "$FIFO_DIR/pi_in" "$FIFO_DIR/pi_out"
 
-# Start pi in RPC mode with thinking off for cleaner output
-if [ "$MODE" = "gen" ]; then
-    pi --mode rpc --thinking off --no-tools < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
-else
-    pi --mode rpc --thinking off --tools read < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
-fi
+[ "$MODE" = "gen" ] && PI_ARGS="--thinking off --no-tools" || PI_ARGS="--thinking off --tools read"
+pi --mode rpc $PI_ARGS < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
 PI_PID=$!
 
-# Open file descriptors
 exec 3>"$FIFO_DIR/pi_in"
 exec 4<"$FIFO_DIR/pi_out"
 
-# Send prompt
-CMD=$(jq -n -c --arg q "$MSG" '{"type":"prompt","message":$q}')
-echo "$CMD" >&3
+jq -n -c --arg q "$MSG" '{"type":"prompt","message":$q}' >&3
 
-# Read response with spinner
+# Read response
 RESPONSE=""
 spin='⣾⣽⣻⢿⡿⣟⣯⣷'
 i=0
 
 while IFS= read -r -t 30 line <&4; do
-    # Skip non-JSON lines
-    if ! printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
-        continue
-    fi
+    printf '%s' "$line" | jq -e . >/dev/null 2>&1 || continue
     
-    event=$(printf '%s' "$line" | jq -r '.type' 2>/dev/null || echo "")
-    
-    case "$event" in
+    case "$(printf '%s' "$line" | jq -r '.type')" in
         "tool_execution_start")
-            tool=$(printf '%s' "$line" | jq -r '.toolName' 2>/dev/null || echo "")
-            printf "\r🔧 %s" "$tool"
+            printf "\r🔧 %s" "$(printf '%s' "$line" | jq -r '.toolName')"
             ;;
         "tool_execution_end")
             printf "\r✓\n"
             ;;
         "message_update")
-            # Handle different delta types
-            delta_type=$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
+            delta_type=$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type')
             case "$delta_type" in
                 "text_delta")
-                    # Extract text delta
-                    delta_text=$(printf '%s' "$line" | jq -j '.assistantMessageEvent.partial.content[0].text' 2>/dev/null || printf '')
+                    delta_text=$(printf '%s' "$line" | jq -j '.assistantMessageEvent.partial.content[0].text')
                     RESPONSE="${RESPONSE}${delta_text}"
                     i=$(( (i + 1) % ${#spin} ))
                     printf "\r\033[90m[%s] %d chars\033[0m" "${spin:$i:1}" "${#RESPONSE}"
                     ;;
                 "text_start")
-                    # Start of text content
                     printf "\r\033[90m[开始...]\033[0m"
                     ;;
             esac
             ;;
         "agent_end")
             printf "\r\033[K"
-            # Get final response from messages array
-            # The content can be an array with thinking + text
-            content=$(printf '%s' "$line" | jq -r '.messages[-1].content' 2>/dev/null || echo "[]")
-            
-            # Try to extract text content
-            RESPONSE=$(printf '%s' "$line" | jq -r '[.messages[-1].content[] | select(.type == "text") | .text] | join("")' 2>/dev/null || printf '')
-            
-            # Fallback: try to get raw content
-            if [ -z "$RESPONSE" ] || [ "$RESPONSE" = "null" ]; then
-                RESPONSE=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text' 2>/dev/null || printf '')
-            fi
-            
+            RESPONSE=$(printf '%s' "$line" | jq -r '[.messages[-1].content[] | select(.type == "text") | .text] | join("")')
+            [ -z "$RESPONSE" ] || [ "$RESPONSE" = "null" ] && RESPONSE=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text')
             break
             ;;
     esac
@@ -205,33 +185,29 @@ done
 
 echo ""
 
-if [ -z "$RESPONSE" ]; then
-    print_error "无响应"
-    exit 1
-fi
+[ -z "$RESPONSE" ] && { print_error "无响应"; exit 1; }
 
-# Handle gen mode - extract command
+# Output
 if [ "$MODE" = "gen" ]; then
     print_info "生成命令..."
-    # Extract command from markdown code blocks
     CMD=$(echo "$RESPONSE" | sed -n '/```/,/```/p' | sed '1d;$d' | head -1)
-    # Fallback: first non-empty line
-    if [ -z "$CMD" ]; then
-        CMD=$(echo "$RESPONSE" | grep -v '^$' | grep -v '^#' | head -1 | sed 's/^[[:space:]]*//')
-    fi
+    [ -z "$CMD" ] && CMD=$(echo "$RESPONSE" | grep -v '^$' | grep -v '^#' | head -1 | sed 's/^[[:space:]]*//')
     if [ -n "$CMD" ]; then
-        printf "%s\n" "$CMD"
+        printf "\033[38;2;137;179;190m──────────────────────────────────────────────────────────────────────\033[0m\n"
+        printf "\033[38;2;166;227;161m%s\033[0m\n" "$CMD"
+        printf "\033[38;2;137;179;190m──────────────────────────────────────────────────────────────────────\033[0m\n"
         echo ""
         read -p "执行? [y/N] " -n 1 -r REPLY
         echo ""
-        if [[ $REPLY =~ ^[Yy]$ ]]; then
-            eval "$CMD"
-        fi
+        [[ $REPLY =~ ^[Yy]$ ]] && eval "$CMD" || true
     else
         print_error "无法提取命令"
         printf "%s\n" "$RESPONSE"
     fi
 else
-    # Render markdown
-    printf "%s\n" "$RESPONSE" | gum format -t markdown
+    # Output with separator lines
+    printf "\033[38;2;137;179;190m────────────────────────────────────────────────────────────────────────\033[0m\n"
+    printf "%s\n" "$RESPONSE" | gum format -t markdown 2>/dev/null || printf "%s\n" "$RESPONSE"
+    printf "\033[38;2;137;179;190m────────────────────────────────────────────────────────────────────────\033[0m\n"
+    echo ""
 fi
