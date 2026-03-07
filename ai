@@ -123,5 +123,6 @@ if [ "$MODE" = "gen" ]; then
         printf "%s\n" "$RESPONSE"
     fi
 else
-    printf "%s\n" "$RESPONSE"
+    # Render markdown
+    printf "%s\n" "$RESPONSE" | gum format -t markdown
 fi
