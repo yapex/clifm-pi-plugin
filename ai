@@ -2,9 +2,10 @@
 
 # CLIFM PI Plugin
 # Usage: 
-#   ai           - Start AI conversation
-#   ai sel       - Analyze selected files
-# Uses pi RPC mode for persistent session
+#   ai @file1 @file2 解释这些文件
+#   ai gen 查找所有 .md 文件
+#   ai 解释一下什么是 bash
+# Uses pi RPC mode
 
 set -e
 
@@ -15,370 +16,171 @@ if type tput >/dev/null 2>&1; then
     GREEN="$(tput setaf 2)"
     YELLOW="$(tput setaf 3)"
     BLUE="$(tput setaf 4)"
-    BOLD="$(tput bold)"
 else
-    RESET=""
-    RED=""
-    GREEN=""
-    YELLOW=""
-    BLUE=""
-    BOLD=""
+    RESET="" RED="" GREEN="" YELLOW="" BLUE=""
 fi
 
-# Colored output functions
 print_error() { printf "%s%s%s\n" "$RED" "$@" "$RESET" >&2; }
 print_success() { printf "%s%s%s\n" "$GREEN" "$@" "$RESET"; }
-print_warning() { printf "%s%s%s\n" "$YELLOW" "$@" "$RESET"; }
 print_info() { printf "%s%s%s\n" "$BLUE" "$@" "$RESET"; }
 
-# Check dependencies with colored output
-if ! command -v gum &> /dev/null; then
-    print_error "gum is not installed"
-    echo "Run: brew install gum"
-    exit 1
-fi
-
+# Check dependencies
 if ! command -v pi &> /dev/null; then
     print_error "pi is not installed"
-    echo "Please install pi CLI tool"
     exit 1
 fi
 
 if ! command -v jq &> /dev/null; then
     print_error "jq is not installed"
-    echo "Run: brew install jq"
     exit 1
-fi
-
-print_success "✓ Dependencies check passed"
-
-# Detect clipboard command
-if command -v pbcopy &> /dev/null; then
-    CLIP_CMD="pbcopy"
-elif command -v xclip &> /dev/null; then
-    CLIP_CMD="xclip -selection clipboard"
-else
-    CLIP_CMD=""
 fi
 
 # Parse arguments
 MODE="chat"
-USE_TOOLS=false
-SELECTED_FILES=""
-GEN_QUERY=""
+FILES=()
+QUERY=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        sel)
-            MODE="sel"
-            USE_TOOLS=true
-            shift
-            ;;
         gen)
             MODE="gen"
-            USE_TOOLS=true
             shift
-            # Collect remaining args as the query
-            if [ $# -gt 0 ]; then
-                GEN_QUERY="$*"
-                break
-            fi
+            QUERY="$*"
+            break
             ;;
-        history)
-            HISTORY_FILE="${HOME}/.config/clifm/ai_history.log"
-            if [ -f "$HISTORY_FILE" ]; then
-                tail -50 "$HISTORY_FILE"
+        @*)
+            # Extract file path (remove @ prefix)
+            file="${1:1}"
+            if [ -e "$file" ]; then
+                FILES+=("$file")
+            elif [ -e "$PWD/$file" ]; then
+                FILES+=("$PWD/$file")
             else
-                print_info "No history yet"
+                print_warning "File not found: $file"
             fi
-            exit 0
+            shift
             ;;
         *)
-            # If argument is a file path, treat it as selected file
-            if [ -e "$1" ]; then
-                SELECTED_FILES="$SELECTED_FILES$1"$'\n'
-            fi
-            shift
+            QUERY="$*"
+            break
             ;;
     esac
 done
 
-# If we got files as arguments, switch to sel mode
-if [ -n "$SELECTED_FILES" ]; then
+if [ -z "$QUERY" ]; then
+    echo "Usage:"
+    echo "  ai @file1 @file2 解释这些文件"
+    echo "  ai gen 查找所有 .md 文件"
+    echo "  ai 解释一下什么是 bash"
+    exit 0
+fi
+
+# Build context
+CONTEXT=""
+if [ ${#FILES[@]} -gt 0 ]; then
     MODE="sel"
-    USE_TOOLS=true
-fi
-
-# Smart mode detection: auto-detect selected files from CLIFM_SELFILE
-if [ "$MODE" = "chat" ] && [ -z "$SELECTED_FILES" ]; then
-    # Check if CLIFM_SELFILE has content
-    if [ -f "$CLIFM_SELFILE" ] && [ -s "$CLIFM_SELFILE" ]; then
-        # Files are selected, use sel mode
-        MODE="sel"
-        USE_TOOLS=true
-        print_info "Auto-detected selected files, using sel mode"
-    fi
-fi
-
-# Build context file for sel mode
-CONTEXT_FILE=""
-if [ "$MODE" = "sel" ]; then
-    # Determine source of selected files
-    if [ -n "$SELECTED_FILES" ]; then
-        # Files passed as arguments
-        FILE_LIST="$SELECTED_FILES"
-    elif [ -f "$CLIFM_SELFILE" ] && [ -s "$CLIFM_SELFILE" ]; then
-        # Files from CLIFM_SELFILE
-        FILE_LIST=$(cat "$CLIFM_SELFILE")
-    else
-        echo "No files selected. Use 's' to select files first."
-        exit 1
-    fi
-
-    CONTEXT_FILE=$(mktemp)
-    {
-        echo "Current directory: $PWD"
-        echo ""
-        echo "Selected files:"
-        echo ""
-
-        while IFS= read -r file; do
-            # Handle relative paths
-            if [ ! -e "$file" ] && [ -e "$PWD/$file" ]; then
-                file="$PWD/$file"
-            fi
-
-            if [ -e "$file" ]; then
-                echo "--- $file ---"
-                if [ -f "$file" ]; then
-                    if file "$file" | grep -q "text\|JSON\|empty"; then
-                        cat "$file" 2>/dev/null || echo "[Unable to read file]"
-                    else
-                        echo "[Binary file: $(file "$file" | cut -d: -f2)]"
-                    fi
-                elif [ -d "$file" ]; then
-                    echo "[Directory contents:]"
-                    ls -la "$file" 2>/dev/null | head -20
-                fi
-                echo ""
-            else
-                echo "--- $file ---"
-                echo "[File not found]"
-                echo ""
-            fi
-        done <<< "$FILE_LIST"
-    } > "$CONTEXT_FILE"
-fi
-
-# Build context for gen mode (command generation)
-if [ "$MODE" = "gen" ]; then
-    CONTEXT_FILE=$(mktemp)
-    {
-        echo "Generate a shell command to accomplish the user's goal."
-        echo "Only output the command, no explanation."
-        echo ""
-        if [ -n "$SELECTED_FILES" ]; then
-            echo "Selected files:"
-            echo "$SELECTED_FILES"
+    CONTEXT="Selected files:\n"
+    for f in "${FILES[@]}"; do
+        if [ -f "$f" ]; then
+            content=$(cat "$f" 2>/dev/null || echo "[Unable to read]")
+            CONTEXT+="\n--- $f ---\n$content\n"
+        elif [ -d "$f" ]; then
+            listing=$(ls -la "$f" 2>/dev/null | head -20)
+            CONTEXT+="\n--- $f (directory) ---\n$listing\n"
         fi
-    } > "$CONTEXT_FILE"
+    done
+    CONTEXT+="\n\n"
 fi
 
 # Cleanup function
 cleanup() {
     kill $PI_PID 2>/dev/null || true
     rm -rf "$FIFO_DIR"
-    [ -n "$CONTEXT_FILE" ] && rm -f "$CONTEXT_FILE"
 }
 trap cleanup EXIT
 
-# History management
-HISTORY_FILE="${HOME}/.config/clifm/ai_history.log"
-
-log_history() {
-    local query="$1"
-    local response="$2"
-    local mode="$3"
-    
-    # Create history file if not exists
-    mkdir -p "$(dirname "$HISTORY_FILE")"
-    touch "$HISTORY_FILE"
-    
-    # Append to history
-    {
-        echo "---"
-        echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
-        echo "Mode: $mode"
-        echo "---"
-        echo "Q: $query"
-        echo "---"
-        echo "A: $response"
-        echo ""
-    } >> "$HISTORY_FILE"
-}
-
-# Create temp directory for fifos
+# Create fifos
 FIFO_DIR=$(mktemp -d)
-FIFO_IN="$FIFO_DIR/pi_in"
-FIFO_OUT="$FIFO_DIR/pi_out"
-mkfifo "$FIFO_IN"
-mkfifo "$FIFO_OUT"
+mkfifo "$FIFO_DIR/pi_in" "$FIFO_DIR/pi_out"
 
-# Start pi in RPC mode
-if [ "$USE_TOOLS" = true ]; then
-    pi --mode rpc --thinking off --tools read < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
+# Start pi
+if [ "$MODE" = "gen" ]; then
+    pi --mode rpc --thinking off --no-tools < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
 else
-    pi --mode rpc --thinking off --no-tools < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
+    pi --mode rpc --thinking off --tools read < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
 fi
 PI_PID=$!
 
-# Open file descriptors
-exec 3>"$FIFO_IN"
-exec 4<"$FIFO_OUT"
+exec 3>"$FIFO_DIR/pi_in"
+exec 4<"$FIFO_DIR/pi_out"
 
-# Read events from pi with streaming display
-read_response() {
-    local text=""
-    local char_count=0
-    # Improved spinner using Unicode box drawing characters
-    local spin='⣾⣽⣻⢿⡿⣟⣯⣷'
-    local spinner_idx=0
-
-    while IFS= read -r -t 60 line <&4; do
-        # Skip non-JSON lines
-        if ! printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
-            continue
-        fi
-
-        event=$(printf '%s' "$line" | jq -r '.type' 2>/dev/null || echo "")
-
-        case "$event" in
-            "tool_execution_start")
-                tool_name=$(printf '%s' "$line" | jq -r '.toolName')
-                gum style --foreground 214 "🔧 $tool_name"
-                ;;
-            "tool_execution_end")
-                gum style --foreground 2 "✓"
-                ;;
-            "message_update")
-                delta_type=$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
-                case "$delta_type" in
-                    "text_delta")
-                        # Extract text from partial field (accumulated text with newlines)
-                        text=$(printf '%s' "$line" | jq -j '.assistantMessageEvent.partial.content[0].text' 2>/dev/null || printf '')
-                        char_count=${#text}
-
-                        # Show progress indicator
-                        spinner_idx=$(( (spinner_idx + 1) % ${#spin} ))
-                        local spin_char="${spin:spinner_idx:1}"
-                        printf "\r\033[90m[%s] Processing... (%d chars)\033[0m" "$spin_char" "$char_count"
-                        ;;
-                esac
-                ;;
-            "agent_end")
-                # Clear progress indicator
-                printf "\r\033[K"
-
-                # Debug: show raw response
-                # printf "DEBUG: %s\n" "$line" >&2
-
-                # Extract final assistant message from messages array
-                text=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text' 2>/dev/null || printf '')
-                
-                # If text is null, try alternative paths
-                if [ "$text" = "null" ] || [ -z "$text" ]; then
-                    text=$(printf '%s' "$line" | jq -r '.messages[-1].content | if type == "array" then .[0].text else .text end' 2>/dev/null || printf '')
-                fi
-                
-                echo ""
-                break
-                ;;
-        esac
-    done
-
-    RESPONSE="$text"
-
-    # Render with gum format using temp file
-    if [ -n "$RESPONSE" ]; then
-        echo ""
-        print_sep
-        echo ""
-        local md_file=$(mktemp)
-        printf '%s\n' "$RESPONSE" > "$md_file"
-        gum format -t markdown < "$md_file"
-        rm -f "$md_file"
-    fi
-}
-
-# Send command to pi
-send_cmd() {
-    echo "$1" >&3
-}
-
-# Print separator
-print_sep() {
-    gum style --foreground 240 "──────────────────────────────────────────────────────────"
-}
-
-# First query - use gum input with default value
-if [ "$MODE" = "sel" ]; then
-    query=$(gum input --value "解释一下" --header "🤖 Ask about selected files")
-elif [ "$MODE" = "gen" ]; then
-    # Gen mode: use command line query directly
-    if [ -n "$GEN_QUERY" ]; then
-        query="$GEN_QUERY"
-    else
-        print_error "Usage: ai gen <command description>"
-        echo "Example: ai gen 列出所有 .md 文件"
-        exit 1
-    fi
+# Send prompt
+if [ "$MODE" = "gen" ]; then
+    print_info "Generating command..."
+    msg="Task: Generate a shell command to: $QUERY\n\nRespond with ONLY the command, no explanations or markdown."
+    cmd=$(jq -n -c --arg q "$msg" '{"type":"prompt","message":$q}')
+elif [ "$MODE" = "sel" ]; then
+    msg="${CONTEXT}Question: $QUERY"
+    cmd=$(jq -n -c --arg q "$msg" '{"type":"prompt","message":$q}')
 else
-    query=$(gum input --value "解释一下" --header "🤖 Ask AI")
+    cmd=$(jq -n -c --arg q "$QUERY" '{"type":"prompt","message":$q}')
 fi
 
-if [ -z "$query" ]; then
-    exit 0
-fi
+echo "$cmd" >&3
 
-# Send first prompt
-gum style --foreground 214 "🤔 Querying AI..."
+# Read response
+RESPONSE=""
+spin='⣾⣽⣻⢿⡿⣟⣯⣷'
+i=0
+
+while IFS= read -r -t 60 line <&4; do
+    if ! printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
+        continue
+    fi
+    
+    event=$(printf '%s' "$line" | jq -r '.type' 2>/dev/null || echo "")
+    
+    case "$event" in
+        "tool_execution_start")
+            tool=$(printf '%s' "$line" | jq -r '.toolName')
+            printf "\r🔧 %s" "$tool"
+            ;;
+        "tool_execution_end")
+            printf "\r✓\n"
+            ;;
+        "message_update")
+            delta=$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
+            if [ "$delta" = "text_delta" ]; then
+                RESPONSE=$(printf '%s' "$line" | jq -j '.assistantMessageEvent.partial.content[0].text' 2>/dev/null || printf '')
+                i=$(( (i + 1) % ${#spin} ))
+                printf "\r\033[90m[%s] %d chars\033[0m" "${spin:$i:1}" "${#RESPONSE}"
+            fi
+            ;;
+        "agent_end")
+            printf "\r\033[K"
+            RESPONSE=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text' 2>/dev/null || printf '')
+            if [ "$RESPONSE" = "null" ] || [ -z "$RESPONSE" ]; then
+                RESPONSE=$(printf '%s' "$line" | jq -r '.messages[-1].content | if type == "array" then .[0].text else .text end' 2>/dev/null || printf '')
+            fi
+            break
+            ;;
+    esac
+done
+
 echo ""
 
-if [ "$MODE" = "sel" ] && [ -n "$CONTEXT_FILE" ]; then
-    cmd=$(jq -n -c --arg context "$(cat "$CONTEXT_FILE")" --arg q "$query" '{"type":"prompt","message":"Context:\n\($context)\n\nQuestion: \($q)"}')
-    send_cmd "$cmd"
-elif [ "$MODE" = "gen" ]; then
-    # Gen mode: generate shell command from natural language
-    print_info "Generating command..."
-    if [ -n "$CONTEXT_FILE" ]; then
-        cmd=$(jq -n -c --arg context "$(cat "$CONTEXT_FILE")" --arg q "$query" '{"type":"prompt","message":"Context:\n\($context)\n\nTask: Generate a shell command to: \($q)\n\nRespond with ONLY the command, no explanations or markdown."}')
-    else
-        cmd=$(jq -n -c --arg q "$query" '{"type":"prompt","message":"Task: Generate a shell command to: \($q)\n\nRespond with ONLY the command, no explanations or markdown."}')
-    fi
-    send_cmd "$cmd"
-else
-    cmd=$(jq -n -c --arg q "$query" '{"type":"prompt","message":$q}')
-    send_cmd "$cmd"
+if [ -z "$RESPONSE" ] || [ "$RESPONSE" = "null" ]; then
+    print_error "No response from AI"
+    exit 1
 fi
 
-# Read response (streaming)
-RESPONSE=""
-read_response
-
-# Log to history (truncate if too long - keep last 5000 chars)
-if [ -n "$RESPONSE" ] && [ "$MODE" != "gen" ]; then
-    log_history "$query" "${RESPONSE:0:5000}" "$MODE"
-fi
-
-# Handle gen mode: extract and optionally execute command
-if [ "$MODE" = "gen" ] && [ -n "$RESPONSE" ] && [ "$RESPONSE" != "null" ]; then
-    # Extract just the command (first line, remove code blocks if any)
+# Handle gen mode
+if [ "$MODE" = "gen" ]; then
     CMD=$(echo "$RESPONSE" | sed 's/```//g' | head -1 | xargs)
     if [ -n "$CMD" ]; then
+        print_success "Command:"
         echo ""
-        print_success "Generated command:"
-        echo ""
-        gum style --foreground 2 "$CMD"
+        printf "%s\n" "$CMD"
         echo ""
         read -p "Execute? [y/N] " -n 1 -r REPLY
         echo ""
@@ -386,30 +188,10 @@ if [ "$MODE" = "gen" ] && [ -n "$RESPONSE" ] && [ "$RESPONSE" != "null" ]; then
             eval "$CMD"
         fi
     else
-        print_warning "No command could be extracted from response"
-        echo "Raw response:"
-        echo "$RESPONSE"
+        print_error "Could not extract command"
+        printf "%s\n" "$RESPONSE"
     fi
-    exit 0
+else
+    # Render markdown
+    printf "%s\n" "$RESPONSE" | gum format -t markdown
 fi
-
-# Main loop
-while true; do
-    echo ""
-    print_sep
-    echo ""
-
-    query=$(gum input --placeholder "Ask more... (empty to exit)" --header "🤖")
-
-    if [ -z "$query" ]; then
-        exit 0
-    fi
-    
-    echo ""
-    gum style --foreground 214 "🤔 Querying AI..."
-    echo ""
-    cmd=$(jq -n -c --arg q "$query" '{"type":"prompt","message":$q}')
-    send_cmd "$cmd"
-    RESPONSE=""
-    read_response
-done
