@@ -134,11 +134,7 @@ send_cmd() {
 }
 
 # First query
-if [ "$MODE" = "sel" ]; then
-    query=$(gum input --value "解释一下" --cursor-at=end --header "🤖 Analyzing selected files")
-else
-    query=$(gum input --placeholder "Ask AI..." --header "🤖 Enter your question")
-fi
+query=$(gum input --value "解释一下" --cursor-at=end --header "🤖 Enter your question")
 
 if [ -z "$query" ]; then
     exit 0
