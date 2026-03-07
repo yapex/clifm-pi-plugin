@@ -103,6 +103,17 @@ if [ -n "$SELECTED_FILES" ]; then
     USE_TOOLS=true
 fi
 
+# Smart mode detection: auto-detect selected files from CLIFM_SELFILE
+if [ "$MODE" = "chat" ] && [ -z "$SELECTED_FILES" ]; then
+    # Check if CLIFM_SELFILE has content
+    if [ -f "$CLIFM_SELFILE" ] && [ -s "$CLIFM_SELFILE" ]; then
+        # Files are selected, use sel mode
+        MODE="sel"
+        USE_TOOLS=true
+        print_info "Auto-detected selected files, using sel mode"
+    fi
+fi
+
 # Build context file for sel mode
 CONTEXT_FILE=""
 if [ "$MODE" = "sel" ]; then
