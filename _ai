@@ -1,0 +1,36 @@
+# ai command completion for zsh
+# Add to ~/.zshrc: source /path/to/_ai
+
+_ai_complete() {
+    local -a files
+    local current_word="$words[CURRENT]"
+    local last_word="$words[$((CURRENT - 1))]"
+    
+    # Complete @files after ai command
+    if [ "$last_word" = "ai" ] && [[ "$current_word" == @* ]]; then
+        local partial="${current_word:1}"
+        
+        # Find matching files
+        if [ -n "$partial" ]; then
+            files=($(compgen -f -- "$partial"))
+        else
+            files=($(compgen -f))
+        fi
+        
+        if [ ${#files} -gt 0 ]; then
+            _describe 'file' files
+        fi
+    fi
+    
+    # Complete subcommands after ai
+    if [ "$last_word" = "ai" ] && [ "$current_word" != @* ]; then
+        compadd -a "_ai_subcommands"
+    fi
+}
+
+# Register completion
+compdef _ai_complete ai
+
+# Subcommands
+typeset -ga _ai_subcommands
+_ai_subcommands=(gen sel)

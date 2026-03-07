@@ -4,66 +4,34 @@
 
 ## 功能
 
-- 使用 gum 弹窗输入问题
-- 调用 `pi` 执行 AI 查询（RPC 模式，保持上下文）
-- 响应完成后用 gum 渲染 Markdown 格式
-- 支持多轮对话（上下文保持）
-- 支持分析选中的文件
+- 使用 `@file` 语法指定要分析的文件
+- 命令生成模式 (`gen`)
+- Markdown 渲染输出
 
 ## 依赖
 
-必需：
-- `gum` - 终端 UI 工具，用于输入和 Markdown 渲染 (`brew install gum`)
 - `pi` - AI CLI 工具
-- `jq` - JSON 处理 (`brew install jq`)
+- `gum` - 终端 UI 工具，用于 Markdown 渲染 (`brew install gum`)
 
 ## 安装
 
-### 方式 1：使用安装脚本（推荐）
-
 ```bash
-# 运行安装脚本
 ./install.sh
 ```
 
-安装脚本会自动：
-- 检查依赖（gum、pi、jq）
-- 检查 clifm 是否已安装
-- 创建符号链接到 `~/.config/clifm/plugins/ai`
-- 设置正确的权限
-
-### 方式 2：手动安装
-
-```bash
-# 创建插件链接
-ln -sf ~/workspace/clifm-pi-plugin/ai ~/.config/clifm/plugins/ai
-chmod +x ~/workspace/clifm-pi-plugin/ai
-```
-
-**注意**：无需创建 actions 文件，clifm 会自动识别 `plugins` 目录中的可执行文件。
-
 ## 使用
 
-### 方式 1：直接选择文件运行（推荐）
 ```bash
-s file1.py file2.py    # 先选择文件
-ai                     # 直接运行，clifm 会把选中的文件作为参数传递
+# 分析文件（支持多个 @file）
+ai @file1.py @file2.py 解释这些文件
+
+# 生成命令
+ai gen 查找所有 .md 文件
+
+# 普通对话
+ai 解释一下什么是 bash
 ```
 
-### 方式 2：使用 sel 子命令
-```bash
-s file1.py file2.py    # 先选择文件
-ai sel                 # 从 CLIFM_SELFILE 读取选中的文件
-```
+## Zsh 补全
 
-### 普通对话（不分析文件）
-```bash
-ai                     # 直接运行，不选择文件
-```
-
-## 交互
-
-- gum 输入框默认显示 `解释一下`，可直接发送或修改
-- AI 响应完成后用 gum 渲染 Markdown 格式（代码高亮、列表、标题等）
-- 继续输入 → 追问（上下文保持）
-- 空输入（按 Esc）→ 直接退出
+安装后自动启用 `ai @` 文件名补全。按 Tab 补全。

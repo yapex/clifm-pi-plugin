@@ -79,6 +79,18 @@ ln -sf "$SCRIPT_DIR/ai" "$PLUGINS_DIR/ai"
 # Make sure the script is executable
 chmod +x "$SCRIPT_DIR/ai"
 
+# Install zsh completion
+COMPLETION_DIR="$HOME/.zsh/completions"
+if [ ! -d "$COMPLETION_DIR" ]; then
+    mkdir -p "$COMPLETION_DIR"
+fi
+
+if [ -f "$SCRIPT_DIR/_ai" ]; then
+    ln -sf "$SCRIPT_DIR/_ai" "$COMPLETION_DIR/_ai" 2>/dev/null || true
+    echo "source $SCRIPT_DIR/_ai" >> "$HOME/.zshrc" 2>/dev/null || true
+    echo -e "${GREEN}✓ Zsh completion installed${NC}"
+fi
+
 echo -e "${GREEN}✓ Plugin installed to $PLUGINS_DIR/ai${NC}"
 echo ""
 
@@ -87,15 +99,11 @@ if [ -x "$PLUGINS_DIR/ai" ]; then
     echo -e "${GREEN}✓ Installation successful!${NC}"
     echo ""
     echo "Usage:"
-    echo "  In clifm:"
-    echo "    s file1.py file2.py    # Select files"
-    echo "    ai                     # Ask AI about selected files"
+    echo "  ai @file1 @file2 解释这些文件"
+    echo "  ai gen 查找所有 .md 文件"
+    echo "  ai 解释一下什么是 bash"
     echo ""
-    echo "  Or:"
-    echo "    ai                     # Start AI conversation"
-    echo ""
-    echo "  Or:"
-    echo "    ai sel                 # Use CLIFM_SELFILE"
+    echo "Zsh completion enabled for @file completion"
 else
     echo -e "${RED}✗ Installation failed${NC}"
     exit 1
