@@ -2,7 +2,7 @@
 
 # CLIFM PI Plugin
 # Usage: 
-#   ai @file1 @file2 解释这些文件
+#   ai file1 file2 解释这些文件
 #   ai gen 查找所有 .md 文件
 #   ai 解释一下什么是 bash
 
@@ -36,25 +36,45 @@ while [ $# -gt 0 ]; do
             QUERY="$*"
             break
             ;;
-        @*)
-            file="${1:1}"
-            if [ -e "$file" ]; then
-                FILES+=("$file")
-            elif [ -e "$PWD/$file" ]; then
-                FILES+=("$PWD/$file")
-            fi
-            shift
+        -h|--help)
+            echo "Usage:"
+            echo "  ai file1 file2 解释这些文件"
+            echo "  ai gen 查找所有 .md 文件"  
+            echo "  ai 解释一下什么是 bash"
+            exit 0
             ;;
         *)
-            QUERY="$*"
-            break
+            # Check if it's an existing file
+            if [ -e "$1" ]; then
+                if [ -e "$PWD/$1" ]; then
+                    FILES+=("$PWD/$1")
+                else
+                    FILES+=("$1")
+                fi
+            else
+                # Not a file, it's part of the query
+                QUERY="$*"
+                break
+            fi
+            shift
             ;;
     esac
 done
 
+# If no files from args, check CLIFM_SELFILE
+if [ ${#FILES[@]} -eq 0 ] && [ -f "$CLIFM_SELFILE" ] && [ -s "$CLIFM_SELFILE" ]; then
+    while IFS= read -r f; do
+        if [ -e "$f" ]; then
+            FILES+=("$f")
+        elif [ -e "$PWD/$f" ]; then
+            FILES+=("$PWD/$f")
+        fi
+    done < "$CLIFM_SELFILE"
+fi
+
 if [ -z "$QUERY" ]; then
     echo "Usage:"
-    echo "  ai @file1 @file2 解释这些文件"
+    echo "  ai file1 file2 解释这些文件"
     echo "  ai gen 查找所有 .md 文件"  
     echo "  ai 解释一下什么是 bash"
     exit 0
