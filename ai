@@ -4,7 +4,6 @@
 # Usage: 
 #   ai           - Start AI conversation
 #   ai sel       - Analyze selected files
-#   ai sel code  - Analyze selected files (code mode, no file tools)
 # Uses pi RPC mode for persistent session
 
 set -e
@@ -37,7 +36,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         sel)
             MODE="sel"
-            USE_TOOLS=true  # sel mode needs read tool
+            USE_TOOLS=true
             shift
             ;;
         *)
@@ -46,37 +45,47 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-# Build context based on mode
-build_context() {
-    local context=""
-    
-    if [ "$MODE" = "sel" ]; then
-        if [ -f "$CLIFM_SELFILE" ] && [ -s "$CLIFM_SELFILE" ]; then
-            context="Current directory: $PWD\n\nSelected files:\n"
-            while IFS= read -r file; do
-                if [ -e "$file" ]; then
-                    context="$context\n--- $file ---\n"
-                    if [ -f "$file" ]; then
-                        # Include file content for text files
-                        if file "$file" | grep -q "text\|JSON\|empty"; then
-                            context="$context$(cat "$file" 2>/dev/null || echo "[Unable to read file]")"
-                        else
-                            context="$context[Binary file: $(file "$file" | cut -d: -f2)]"
-                        fi
-                    elif [ -d "$file" ]; then
-                        context="$context[Directory: $(ls -la "$file" 2>/dev/null | head -20)]"
-                    fi
-                    context="$context\n"
-                fi
-            done < "$CLIFM_SELFILE"
-        else
-            echo "No files selected. Use 's' to select files first." >&2
-            exit 1
-        fi
+# Build context file for sel mode
+CONTEXT_FILE=""
+if [ "$MODE" = "sel" ]; then
+    if [ ! -f "$CLIFM_SELFILE" ] || [ ! -s "$CLIFM_SELFILE" ]; then
+        echo "No files selected. Use 's' to select files first." >&2
+        exit 1
     fi
     
-    echo "$context"
+    CONTEXT_FILE=$(mktemp)
+    {
+        echo "Current directory: $PWD"
+        echo ""
+        echo "Selected files:"
+        echo ""
+        
+        while IFS= read -r file; do
+            if [ -e "$file" ]; then
+                echo "--- $file ---"
+                if [ -f "$file" ]; then
+                    if file "$file" | grep -q "text\|JSON\|empty"; then
+                        cat "$file" 2>/dev/null || echo "[Unable to read file]"
+                    else
+                        echo "[Binary file: $(file "$file" | cut -d: -f2)]"
+                    fi
+                elif [ -d "$file" ]; then
+                    echo "[Directory contents:]"
+                    ls -la "$file" 2>/dev/null | head -20
+                fi
+                echo ""
+            fi
+        done < "$CLIFM_SELFILE"
+    } > "$CONTEXT_FILE"
+fi
+
+# Cleanup function
+cleanup() {
+    kill $PI_PID 2>/dev/null || true
+    rm -rf "$FIFO_DIR"
+    [ -n "$CONTEXT_FILE" ] && rm -f "$CONTEXT_FILE"
 }
+trap cleanup EXIT
 
 # Create temp directory for fifos
 FIFO_DIR=$(mktemp -d)
@@ -85,16 +94,8 @@ FIFO_OUT="$FIFO_DIR/pi_out"
 mkfifo "$FIFO_IN"
 mkfifo "$FIFO_OUT"
 
-# Cleanup on exit
-cleanup() {
-    kill $PI_PID 2>/dev/null || true
-    rm -rf "$FIFO_DIR"
-}
-trap cleanup EXIT
-
 # Start pi in RPC mode
 if [ "$USE_TOOLS" = true ]; then
-    # sel mode: only read tool, no modifications
     pi --mode rpc --tools read < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
 else
     pi --mode rpc --no-tools < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
@@ -132,25 +133,11 @@ send_cmd() {
     echo "$1" >&3
 }
 
-# Escape string for JSON
-json_escape() {
-    # Escape backslashes, double quotes, and control characters
-    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g' | tr '\n' '\a' | sed 's/\a/\\n/g'
-}
-
-# Get initial context
-CONTEXT=$(build_context)
-
 # First query
 if [ "$MODE" = "sel" ]; then
     query=$(gum input --placeholder "What do you want to know about these files?" --header "🤖 Analyzing selected files")
-    # Prepend context to first query
-    if [ -n "$query" ]; then
-        full_query="Context:\n$CONTEXT\n\nQuestion: $query"
-    fi
 else
     query=$(gum input --placeholder "Ask AI..." --header "🤖 Enter your question")
-    full_query="$query"
 fi
 
 if [ -z "$query" ]; then
@@ -160,8 +147,15 @@ fi
 # Send first prompt
 clear
 echo "🤔 Querying AI..."
-escaped_query=$(json_escape "$full_query")
-send_cmd "{\"type\":\"prompt\",\"message\":\"$escaped_query\"}"
+
+if [ "$MODE" = "sel" ] && [ -n "$CONTEXT_FILE" ]; then
+    # For sel mode, send context as first message, then query
+    cmd=$(jq -n --arg context "$(cat "$CONTEXT_FILE")" --arg q "$query" '{"type":"prompt","message":"Context:\n\($context)\n\nQuestion: \($q)"}')
+    send_cmd "$cmd"
+else
+    cmd=$(jq -n --arg q "$query" '{"type":"prompt","message":$q}')
+    send_cmd "$cmd"
+fi
 
 # Read response (streaming)
 RESPONSE=""
@@ -199,8 +193,8 @@ while true; do
         fi
     else
         echo "🤔 Querying AI..."
-        escaped_query=$(json_escape "$query")
-        send_cmd "{\"type\":\"prompt\",\"message\":\"$escaped_query\"}"
+        cmd=$(jq -n --arg q "$query" '{"type":"prompt","message":$q}')
+        send_cmd "$cmd"
         RESPONSE=""
         read_response
     fi
