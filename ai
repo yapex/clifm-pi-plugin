@@ -209,9 +209,9 @@ print_sep() {
 
 # First query - use gum input with default value
 if [ "$MODE" = "sel" ]; then
-    query=$(gum input --value "解释一下" --header "🤖 Ask about selected files")
+    query=$(gum input --value "解释一下" --header "🤖 Ask about selected files" 2>/dev/null) || exit 0
 else
-    query=$(gum input --value "解释一下" --header "🤖 Ask AI")
+    query=$(gum input --value "解释一下" --header "🤖 Ask AI" 2>/dev/null) || exit 0
 fi
 
 if [ -z "$query" ]; then
@@ -239,9 +239,9 @@ while true; do
     echo ""
     print_sep
     echo ""
-    
-    query=$(gum input --placeholder "Ask more... (empty to exit)" --header "🤖")
-    
+
+    query=$(gum input --placeholder "Ask more... (empty to exit)" --header "🤖" 2>/dev/null) || exit 0
+
     if [ -z "$query" ]; then
         exit 0
     fi
