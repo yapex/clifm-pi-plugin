@@ -19,6 +19,21 @@
 
 ## 安装
 
+### 方式 1：使用安装脚本（推荐）
+
+```bash
+# 运行安装脚本
+./install.sh
+```
+
+安装脚本会自动：
+- 检查依赖（gum、pi、jq）
+- 检查 clifm 是否已安装
+- 创建符号链接到 `~/.config/clifm/plugins/ai`
+- 设置正确的权限
+
+### 方式 2：手动安装
+
 ```bash
 # 创建插件链接
 ln -sf ~/workspace/clifm-pi-plugin/ai ~/.config/clifm/plugins/ai
