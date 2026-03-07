@@ -170,7 +170,8 @@ exec 4<"$FIFO_OUT"
 read_response() {
     local text=""
     local char_count=0
-    local spinner="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+    # Improved spinner using Unicode box drawing characters
+    local spin='⣾⣽⣻⢿⡿⣟⣯⣷'
     local spinner_idx=0
 
     while IFS= read -r -t 60 line <&4; do
@@ -198,9 +199,9 @@ read_response() {
                         char_count=${#text}
 
                         # Show progress indicator
-                        spinner_idx=$(( (spinner_idx + 1) % 10 ))
-                        local spin_char="${spinner:spinner_idx:1}"
-                        printf "\r\033[90m%s Receiving: %d chars...\033[0m" "$spin_char" "$char_count"
+                        spinner_idx=$(( (spinner_idx + 1) % ${#spin} ))
+                        local spin_char="${spin:spinner_idx:1}"
+                        printf "\r\033[90m[%s] Processing... (%d chars)\033[0m" "$spin_char" "$char_count"
                         ;;
                 esac
                 ;;
