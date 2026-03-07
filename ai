@@ -134,7 +134,7 @@ send_cmd() {
 }
 
 # First query
-query=$(gum input --value "解释一下" --cursor-at=end --header "🤖 Enter your question")
+query=$(gum input --value "解释一下" --header "🤖 Enter your question")
 
 if [ -z "$query" ]; then
     exit 0
