@@ -146,10 +146,10 @@ echo "🤔 Querying AI..."
 
 if [ "$MODE" = "sel" ] && [ -n "$CONTEXT_FILE" ]; then
     # For sel mode, send context as first message, then query
-    cmd=$(jq -n --arg context "$(cat "$CONTEXT_FILE")" --arg q "$query" '{"type":"prompt","message":"Context:\n\($context)\n\nQuestion: \($q)"}')
+    cmd=$(jq -n -c --arg context "$(cat "$CONTEXT_FILE")" --arg q "$query" '{"type":"prompt","message":"Context:\n\($context)\n\nQuestion: \($q)"}')
     send_cmd "$cmd"
 else
-    cmd=$(jq -n --arg q "$query" '{"type":"prompt","message":$q}')
+    cmd=$(jq -n -c --arg q "$query" '{"type":"prompt","message":$q}')
     send_cmd "$cmd"
 fi
 
@@ -189,7 +189,7 @@ while true; do
         fi
     else
         echo "🤔 Querying AI..."
-        cmd=$(jq -n --arg q "$query" '{"type":"prompt","message":$q}')
+        cmd=$(jq -n -c --arg q "$query" '{"type":"prompt","message":$q}')
         send_cmd "$cmd"
         RESPONSE=""
         read_response
