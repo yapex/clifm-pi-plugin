@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# CLIFM AI Query Plugin
+# CLIFM PI Plugin
 # Usage: 
 #   ai           - Start AI conversation
 #   ai sel       - Analyze selected files
@@ -106,23 +106,40 @@ PI_PID=$!
 exec 3>"$FIFO_IN"
 exec 4<"$FIFO_OUT"
 
-# Read events from pi, accumulate text, return on agent_end
+# Read events from pi with streaming display
 read_response() {
     local text=""
+    local tool_name=""
+    
     while IFS= read -r line <&4; do
         event=$(echo "$line" | jq -r '.type' 2>/dev/null || echo "")
         
-        if [ "$event" = "message_update" ]; then
-            delta_type=$(echo "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
-            if [ "$delta_type" = "text_delta" ]; then
-                delta=$(echo "$line" | jq -r '.assistantMessageEvent.delta' 2>/dev/null || echo "")
-                text="${text}${delta}"
-                echo -n "$delta"
-            fi
-        elif [ "$event" = "agent_end" ]; then
-            echo ""
-            break
-        fi
+        case "$event" in
+            "tool_execution_start")
+                tool_name=$(echo "$line" | jq -r '.toolName')
+                gum style --foreground cyan "🔧 Using tool: $tool_name"
+                ;;
+            "tool_execution_end")
+                gum style --foreground green "✓ Done"
+                ;;
+            "message_update")
+                delta_type=$(echo "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
+                case "$delta_type" in
+                    "text_delta")
+                        delta=$(echo "$line" | jq -r '.assistantMessageEvent.delta' 2>/dev/null || echo "")
+                        text="${text}${delta}"
+                        echo -n "$delta"
+                        ;;
+                    "thinking_delta")
+                        # Skip thinking output for cleaner display
+                        ;;
+                esac
+                ;;
+            "agent_end")
+                echo ""
+                break
+                ;;
+        esac
     done
     
     RESPONSE="$text"
@@ -143,9 +160,9 @@ fi
 # Send first prompt
 clear
 echo "🤔 Querying AI..."
+echo ""
 
 if [ "$MODE" = "sel" ] && [ -n "$CONTEXT_FILE" ]; then
-    # For sel mode, send context as first message, then query
     cmd=$(jq -n -c --arg context "$(cat "$CONTEXT_FILE")" --arg q "$query" '{"type":"prompt","message":"Context:\n\($context)\n\nQuestion: \($q)"}')
     send_cmd "$cmd"
 else
@@ -159,16 +176,12 @@ read_response
 
 # Main loop
 while true; do
-    clear
-    gum style --border double --margin "1 0" --padding "0 2" "📝 $query"
-    echo ""
-    echo "$RESPONSE" | gum format
     echo ""
     gum style --foreground 240 "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
     
     # Direct input for follow-up
-    query=$(gum input --placeholder "Ask more... (Esc to exit)" --header "🤖")
+    query=$(gum input --placeholder "Ask more... (Esc for menu)" --header "🤖")
     
     if [ -z "$query" ]; then
         if [ -n "$CLIP_CMD" ]; then
@@ -188,7 +201,9 @@ while true; do
             exit 0
         fi
     else
+        echo ""
         echo "🤔 Querying AI..."
+        echo ""
         cmd=$(jq -n -c --arg q "$query" '{"type":"prompt","message":$q}')
         send_cmd "$cmd"
         RESPONSE=""
