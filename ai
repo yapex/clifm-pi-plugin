@@ -31,16 +31,26 @@ print_success() { printf "%s%s%s\n" "$GREEN" "$@" "$RESET"; }
 print_warning() { printf "%s%s%s\n" "$YELLOW" "$@" "$RESET"; }
 print_info() { printf "%s%s%s\n" "$BLUE" "$@" "$RESET"; }
 
-# Check dependencies
+# Check dependencies with colored output
 if ! command -v gum &> /dev/null; then
-    echo "Error: gum is not installed. Run: brew install gum"
+    print_error "gum is not installed"
+    echo "Run: brew install gum"
     exit 1
 fi
 
 if ! command -v pi &> /dev/null; then
-    echo "Error: pi is not installed."
+    print_error "pi is not installed"
+    echo "Please install pi CLI tool"
     exit 1
 fi
+
+if ! command -v jq &> /dev/null; then
+    print_error "jq is not installed"
+    echo "Run: brew install jq"
+    exit 1
+fi
+
+print_success "✓ Dependencies check passed"
 
 # Detect clipboard command
 if command -v pbcopy &> /dev/null; then
