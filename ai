@@ -186,6 +186,31 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# History management
+HISTORY_FILE="${HOME}/.config/clifm/ai_history.log"
+
+log_history() {
+    local query="$1"
+    local response="$2"
+    local mode="$3"
+    
+    # Create history file if not exists
+    mkdir -p "$(dirname "$HISTORY_FILE")"
+    touch "$HISTORY_FILE"
+    
+    # Append to history
+    {
+        echo "---"
+        echo "Date: $(date '+%Y-%m-%d %H:%M:%S')"
+        echo "Mode: $mode"
+        echo "---"
+        echo "Q: $query"
+        echo "---"
+        echo "A: $response"
+        echo ""
+    } >> "$HISTORY_FILE"
+}
+
 # Create temp directory for fifos
 FIFO_DIR=$(mktemp -d)
 FIFO_IN="$FIFO_DIR/pi_in"
@@ -317,6 +342,11 @@ fi
 # Read response (streaming)
 RESPONSE=""
 read_response
+
+# Log to history (truncate if too long - keep last 5000 chars)
+if [ -n "$RESPONSE" ] && [ "$MODE" != "gen" ]; then
+    log_history "$query" "${RESPONSE:0:5000}" "$MODE"
+fi
 
 # Handle gen mode: extract and optionally execute command
 if [ "$MODE" = "gen" ] && [ -n "$RESPONSE" ]; then
