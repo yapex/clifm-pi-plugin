@@ -108,17 +108,103 @@ else
     printf '%s\n' "$QUERY" > "$TEMP_PROMPT"
 fi
 
-# Run pi
-if [ "$MODE" = "gen" ]; then
-    print_info "生成命令..."
-    RESPONSE=$(cat "$TEMP_PROMPT" | pi -p --no-tools --thinking off 2>&1)
+# Build the prompt message
+if [ "$MODE" = "sel" ]; then
+    MSG=$(cat "$TEMP_PROMPT")
+elif [ "$MODE" = "gen" ]; then
+    MSG=$(cat "$TEMP_PROMPT")
 else
-    RESPONSE=$(cat "$TEMP_PROMPT" | pi -p --thinking off 2>&1)
+    MSG=$(cat "$TEMP_PROMPT")
 fi
 
 rm -f "$TEMP_PROMPT"
 
-# Show response
+# Cleanup function
+cleanup() {
+    kill $PI_PID 2>/dev/null || true
+    rm -rf "$FIFO_DIR"
+}
+trap cleanup EXIT
+
+# Create fifos for RPC mode
+FIFO_DIR=$(mktemp -d)
+mkfifo "$FIFO_DIR/pi_in" "$FIFO_DIR/pi_out"
+
+# Start pi in RPC mode with thinking off for cleaner output
+if [ "$MODE" = "gen" ]; then
+    pi --mode rpc --thinking off --no-tools < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
+else
+    pi --mode rpc --thinking off --tools read < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
+fi
+PI_PID=$!
+
+# Open file descriptors
+exec 3>"$FIFO_DIR/pi_in"
+exec 4<"$FIFO_DIR/pi_out"
+
+# Send prompt
+CMD=$(jq -n -c --arg q "$MSG" '{"type":"prompt","message":$q}')
+echo "$CMD" >&3
+
+# Read response with spinner
+RESPONSE=""
+spin='⣾⣽⣻⢿⡿⣟⣯⣷'
+i=0
+
+while IFS= read -r -t 30 line <&4; do
+    # Skip non-JSON lines
+    if ! printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
+        continue
+    fi
+    
+    event=$(printf '%s' "$line" | jq -r '.type' 2>/dev/null || echo "")
+    
+    case "$event" in
+        "tool_execution_start")
+            tool=$(printf '%s' "$line" | jq -r '.toolName' 2>/dev/null || echo "")
+            printf "\r🔧 %s" "$tool"
+            ;;
+        "tool_execution_end")
+            printf "\r✓\n"
+            ;;
+        "message_update")
+            # Handle different delta types
+            delta_type=$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
+            case "$delta_type" in
+                "text_delta")
+                    # Extract text delta
+                    delta_text=$(printf '%s' "$line" | jq -j '.assistantMessageEvent.partial.content[0].text' 2>/dev/null || printf '')
+                    RESPONSE="${RESPONSE}${delta_text}"
+                    i=$(( (i + 1) % ${#spin} ))
+                    printf "\r\033[90m[%s] %d chars\033[0m" "${spin:$i:1}" "${#RESPONSE}"
+                    ;;
+                "text_start")
+                    # Start of text content
+                    printf "\r\033[90m[开始...]\033[0m"
+                    ;;
+            esac
+            ;;
+        "agent_end")
+            printf "\r\033[K"
+            # Get final response from messages array
+            # The content can be an array with thinking + text
+            content=$(printf '%s' "$line" | jq -r '.messages[-1].content' 2>/dev/null || echo "[]")
+            
+            # Try to extract text content
+            RESPONSE=$(printf '%s' "$line" | jq -r '[.messages[-1].content[] | select(.type == "text") | .text] | join("")' 2>/dev/null || printf '')
+            
+            # Fallback: try to get raw content
+            if [ -z "$RESPONSE" ] || [ "$RESPONSE" = "null" ]; then
+                RESPONSE=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text' 2>/dev/null || printf '')
+            fi
+            
+            break
+            ;;
+    esac
+done
+
+echo ""
+
 if [ -z "$RESPONSE" ]; then
     print_error "无响应"
     exit 1
@@ -126,7 +212,10 @@ fi
 
 # Handle gen mode - extract command
 if [ "$MODE" = "gen" ]; then
+    print_info "生成命令..."
+    # Extract command from markdown code blocks
     CMD=$(echo "$RESPONSE" | sed -n '/```/,/```/p' | sed '1d;$d' | head -1)
+    # Fallback: first non-empty line
     if [ -z "$CMD" ]; then
         CMD=$(echo "$RESPONSE" | grep -v '^$' | grep -v '^#' | head -1 | sed 's/^[[:space:]]*//')
     fi
