@@ -1,6 +1,6 @@
-# CLIFM AI 查询插件
+# CLIFM PI 插件
 
-在 clifm 中快速调用 AI 查询的插件。
+在 clifm 中快速调用 pi（AI 编程助手）的插件。
 
 ## 功能
 
@@ -23,8 +23,8 @@
 
 ```bash
 # 1. 创建插件链接
-ln -sf ~/workspace/clifm-ai-plugin/ai ~/.config/clifm/plugins/ai
-chmod +x ~/workspace/clifm-ai-plugin/ai
+ln -sf ~/workspace/clifm-pi-plugin/ai ~/.config/clifm/plugins/ai
+chmod +x ~/workspace/clifm-pi-plugin/ai
 
 # 2. 创建 actions 配置
 echo "ai /Users/yapex/.config/clifm/plugins/ai" >> ~/.config/clifm/actions
