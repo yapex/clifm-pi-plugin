@@ -94,11 +94,11 @@ FIFO_OUT="$FIFO_DIR/pi_out"
 mkfifo "$FIFO_IN"
 mkfifo "$FIFO_OUT"
 
-# Start pi in RPC mode
+# Start pi in RPC mode (disable thinking for cleaner output)
 if [ "$USE_TOOLS" = true ]; then
-    pi --mode rpc --tools read < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
+    pi --mode rpc --thinking off --tools read < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
 else
-    pi --mode rpc --no-tools < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
+    pi --mode rpc --thinking off --no-tools < "$FIFO_IN" > "$FIFO_OUT" 2>&1 &
 fi
 PI_PID=$!
 
@@ -109,29 +109,37 @@ exec 4<"$FIFO_OUT"
 # Read events from pi with streaming display
 read_response() {
     local text=""
-    local tool_name=""
+    local in_text_block=false
     
     while IFS= read -r line <&4; do
+        # Skip non-JSON lines
+        if ! echo "$line" | jq -e . >/dev/null 2>&1; then
+            continue
+        fi
+        
         event=$(echo "$line" | jq -r '.type' 2>/dev/null || echo "")
         
         case "$event" in
             "tool_execution_start")
                 tool_name=$(echo "$line" | jq -r '.toolName')
-                gum style --foreground cyan "🔧 Using tool: $tool_name"
+                gum style --foreground cyan "🔧 $tool_name"
                 ;;
             "tool_execution_end")
-                gum style --foreground green "✓ Done"
+                gum style --foreground green "✓"
                 ;;
             "message_update")
                 delta_type=$(echo "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
                 case "$delta_type" in
+                    "text_start")
+                        in_text_block=true
+                        ;;
                     "text_delta")
                         delta=$(echo "$line" | jq -r '.assistantMessageEvent.delta' 2>/dev/null || echo "")
                         text="${text}${delta}"
-                        echo -n "$delta"
+                        printf "%s" "$delta"
                         ;;
-                    "thinking_delta")
-                        # Skip thinking output for cleaner display
+                    "text_end")
+                        in_text_block=false
                         ;;
                 esac
                 ;;
