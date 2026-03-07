@@ -5,35 +5,23 @@
 #   ai @file1 @file2 解释这些文件
 #   ai gen 查找所有 .md 文件
 #   ai 解释一下什么是 bash
-# Uses pi RPC mode
 
 set -e
 
-# Color codes using tput (fallback to empty if not available)
+# Colors
 if type tput >/dev/null 2>&1; then
     RESET="$(tput sgr0)"
     RED="$(tput setaf 1)"
-    GREEN="$(tput setaf 2)"
-    YELLOW="$(tput setaf 3)"
     BLUE="$(tput setaf 4)"
 else
-    RESET="" RED="" GREEN="" YELLOW="" BLUE=""
+    RESET="" RED="" BLUE=""
 fi
 
 print_error() { printf "%s%s%s\n" "$RED" "$@" "$RESET" >&2; }
-print_success() { printf "%s%s%s\n" "$GREEN" "$@" "$RESET"; }
 print_info() { printf "%s%s%s\n" "$BLUE" "$@" "$RESET"; }
 
 # Check dependencies
-if ! command -v pi &> /dev/null; then
-    print_error "pi is not installed"
-    exit 1
-fi
-
-if ! command -v jq &> /dev/null; then
-    print_error "jq is not installed"
-    exit 1
-fi
+command -v pi >/dev/null || { print_error "pi not installed"; exit 1; }
 
 # Parse arguments
 MODE="chat"
@@ -49,14 +37,11 @@ while [ $# -gt 0 ]; do
             break
             ;;
         @*)
-            # Extract file path (remove @ prefix)
             file="${1:1}"
             if [ -e "$file" ]; then
                 FILES+=("$file")
             elif [ -e "$PWD/$file" ]; then
                 FILES+=("$PWD/$file")
-            else
-                print_warning "File not found: $file"
             fi
             shift
             ;;
@@ -70,128 +55,73 @@ done
 if [ -z "$QUERY" ]; then
     echo "Usage:"
     echo "  ai @file1 @file2 解释这些文件"
-    echo "  ai gen 查找所有 .md 文件"
+    echo "  ai gen 查找所有 .md 文件"  
     echo "  ai 解释一下什么是 bash"
     exit 0
 fi
 
-# Build context
-CONTEXT=""
+# Build prompt using template file
+TEMP_PROMPT=$(mktemp)
+
 if [ ${#FILES[@]} -gt 0 ]; then
     MODE="sel"
-    CONTEXT="Selected files:\n"
-    for f in "${FILES[@]}"; do
-        if [ -f "$f" ]; then
-            content=$(cat "$f" 2>/dev/null || echo "[Unable to read]")
-            CONTEXT+="\n--- $f ---\n$content\n"
-        elif [ -d "$f" ]; then
-            listing=$(ls -la "$f" 2>/dev/null | head -20)
-            CONTEXT+="\n--- $f (directory) ---\n$listing\n"
-        fi
-    done
-    CONTEXT+="\n\n"
-fi
-
-# Cleanup function
-cleanup() {
-    kill $PI_PID 2>/dev/null || true
-    rm -rf "$FIFO_DIR"
-}
-trap cleanup EXIT
-
-# Create fifos
-FIFO_DIR=$(mktemp -d)
-mkfifo "$FIFO_DIR/pi_in" "$FIFO_DIR/pi_out"
-
-# Start pi
-if [ "$MODE" = "gen" ]; then
-    pi --mode rpc --thinking off --no-tools < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
-else
-    pi --mode rpc --thinking off --tools read < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
-fi
-PI_PID=$!
-
-exec 3>"$FIFO_DIR/pi_in"
-exec 4<"$FIFO_DIR/pi_out"
-
-# Send prompt
-if [ "$MODE" = "gen" ]; then
-    print_info "Generating command..."
-    msg="Task: Generate a shell command to: $QUERY\n\nRespond with ONLY the command, no explanations or markdown."
-    cmd=$(jq -n -c --arg q "$msg" '{"type":"prompt","message":$q}')
-elif [ "$MODE" = "sel" ]; then
-    msg="${CONTEXT}Question: $QUERY"
-    cmd=$(jq -n -c --arg q "$msg" '{"type":"prompt","message":$q}')
-else
-    cmd=$(jq -n -c --arg q "$QUERY" '{"type":"prompt","message":$q}')
-fi
-
-echo "$cmd" >&3
-
-# Read response
-RESPONSE=""
-spin='⣾⣽⣻⢿⡿⣟⣯⣷'
-i=0
-
-while IFS= read -r -t 60 line <&4; do
-    if ! printf '%s' "$line" | jq -e . >/dev/null 2>&1; then
-        continue
-    fi
-    
-    event=$(printf '%s' "$line" | jq -r '.type' 2>/dev/null || echo "")
-    
-    case "$event" in
-        "tool_execution_start")
-            tool=$(printf '%s' "$line" | jq -r '.toolName')
-            printf "\r🔧 %s" "$tool"
-            ;;
-        "tool_execution_end")
-            printf "\r✓\n"
-            ;;
-        "message_update")
-            delta=$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type' 2>/dev/null || echo "")
-            if [ "$delta" = "text_delta" ]; then
-                RESPONSE=$(printf '%s' "$line" | jq -j '.assistantMessageEvent.partial.content[0].text' 2>/dev/null || printf '')
-                i=$(( (i + 1) % ${#spin} ))
-                printf "\r\033[90m[%s] %d chars\033[0m" "${spin:$i:1}" "${#RESPONSE}"
+    {
+        printf '%s\n' "请分析以下文件内容，然后回答问题。"
+        printf '\n'
+        for f in "${FILES[@]}"; do
+            if [ -f "$f" ]; then
+                printf '%s\n' "--- $f ---"
+                cat "$f" 2>/dev/null || printf '%s\n' "[无法读取]"
+                printf '\n'
             fi
-            ;;
-        "agent_end")
-            printf "\r\033[K"
-            RESPONSE=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text' 2>/dev/null || printf '')
-            if [ "$RESPONSE" = "null" ] || [ -z "$RESPONSE" ]; then
-                RESPONSE=$(printf '%s' "$line" | jq -r '.messages[-1].content | if type == "array" then .[0].text else .text end' 2>/dev/null || printf '')
-            fi
-            break
-            ;;
-    esac
-done
+        done
+        printf '%s\n' "---"
+        printf '%s\n' "问题: $QUERY"
+    } > "$TEMP_PROMPT"
+elif [ "$MODE" = "gen" ]; then
+    {
+        printf '%s\n' "$QUERY"
+        printf '\n'
+        printf '%s\n' "只输出命令，不要解释。"
+    } > "$TEMP_PROMPT"
+else
+    printf '%s\n' "$QUERY" > "$TEMP_PROMPT"
+fi
 
-echo ""
+# Run pi
+if [ "$MODE" = "gen" ]; then
+    print_info "生成命令..."
+    RESPONSE=$(cat "$TEMP_PROMPT" | pi -p --no-tools --thinking off 2>&1)
+else
+    RESPONSE=$(cat "$TEMP_PROMPT" | pi -p --thinking off 2>&1)
+fi
 
-if [ -z "$RESPONSE" ] || [ "$RESPONSE" = "null" ]; then
-    print_error "No response from AI"
+rm -f "$TEMP_PROMPT"
+
+# Show response
+if [ -z "$RESPONSE" ]; then
+    print_error "无响应"
     exit 1
 fi
 
-# Handle gen mode
+# Handle gen mode - extract command
 if [ "$MODE" = "gen" ]; then
-    CMD=$(echo "$RESPONSE" | sed 's/```//g' | head -1 | xargs)
+    CMD=$(echo "$RESPONSE" | sed -n '/```/,/```/p' | sed '1d;$d' | head -1)
+    if [ -z "$CMD" ]; then
+        CMD=$(echo "$RESPONSE" | grep -v '^$' | grep -v '^#' | head -1 | sed 's/^[[:space:]]*//')
+    fi
     if [ -n "$CMD" ]; then
-        print_success "Command:"
-        echo ""
         printf "%s\n" "$CMD"
         echo ""
-        read -p "Execute? [y/N] " -n 1 -r REPLY
+        read -p "执行? [y/N] " -n 1 -r REPLY
         echo ""
         if [[ $REPLY =~ ^[Yy]$ ]]; then
             eval "$CMD"
         fi
     else
-        print_error "Could not extract command"
+        print_error "无法提取命令"
         printf "%s\n" "$RESPONSE"
     fi
 else
-    # Render markdown
-    printf "%s\n" "$RESPONSE" | gum format -t markdown
+    printf "%s\n" "$RESPONSE"
 fi
