@@ -73,6 +73,20 @@ while [ $# -gt 0 ]; do
             USE_TOOLS=true
             shift
             ;;
+        gen)
+            MODE="gen"
+            USE_TOOLS=true
+            shift
+            ;;
+        history)
+            HISTORY_FILE="${HOME}/.config/clifm/ai_history.log"
+            if [ -f "$HISTORY_FILE" ]; then
+                tail -50 "$HISTORY_FILE"
+            else
+                print_info "No history yet"
+            fi
+            exit 0
+            ;;
         *)
             # If argument is a file path, treat it as selected file
             if [ -e "$1" ]; then
@@ -136,6 +150,20 @@ if [ "$MODE" = "sel" ]; then
                 echo ""
             fi
         done <<< "$FILE_LIST"
+    } > "$CONTEXT_FILE"
+fi
+
+# Build context for gen mode (command generation)
+if [ "$MODE" = "gen" ]; then
+    CONTEXT_FILE=$(mktemp)
+    {
+        echo "Generate a shell command to accomplish the user's goal."
+        echo "Only output the command, no explanation."
+        echo ""
+        if [ -n "$SELECTED_FILES" ]; then
+            echo "Selected files:"
+            echo "$SELECTED_FILES"
+        fi
     } > "$CONTEXT_FILE"
 fi
 
@@ -244,6 +272,8 @@ print_sep() {
 # First query - use gum input with default value
 if [ "$MODE" = "sel" ]; then
     query=$(gum input --value "解释一下" --header "🤖 Ask about selected files")
+elif [ "$MODE" = "gen" ]; then
+    query=$(gum input --value "" --header "🤖 Generate shell command")
 else
     query=$(gum input --value "解释一下" --header "🤖 Ask AI")
 fi
@@ -259,6 +289,15 @@ echo ""
 if [ "$MODE" = "sel" ] && [ -n "$CONTEXT_FILE" ]; then
     cmd=$(jq -n -c --arg context "$(cat "$CONTEXT_FILE")" --arg q "$query" '{"type":"prompt","message":"Context:\n\($context)\n\nQuestion: \($q)"}')
     send_cmd "$cmd"
+elif [ "$MODE" = "gen" ]; then
+    # Gen mode: generate shell command from natural language
+    print_info "Generating command..."
+    if [ -n "$CONTEXT_FILE" ]; then
+        cmd=$(jq -n -c --arg context "$(cat "$CONTEXT_FILE")" --arg q "$query" '{"type":"prompt","message":"Context:\n\($context)\n\nTask: Generate a shell command to: \($q)\n\nRespond with ONLY the command, no explanations or markdown."}')
+    else
+        cmd=$(jq -n -c --arg q "$query" '{"type":"prompt","message":"Task: Generate a shell command to: \($q)\n\nRespond with ONLY the command, no explanations or markdown."}')
+    fi
+    send_cmd "$cmd"
 else
     cmd=$(jq -n -c --arg q "$query" '{"type":"prompt","message":$q}')
     send_cmd "$cmd"
@@ -267,6 +306,25 @@ fi
 # Read response (streaming)
 RESPONSE=""
 read_response
+
+# Handle gen mode: extract and optionally execute command
+if [ "$MODE" = "gen" ] && [ -n "$RESPONSE" ]; then
+    # Extract just the command (first line, remove code blocks if any)
+    CMD=$(echo "$RESPONSE" | sed 's/```//g' | head -1 | xargs)
+    if [ -n "$CMD" ]; then
+        echo ""
+        print_success "Generated command:"
+        echo ""
+        gum style --foreground 2 "$CMD"
+        echo ""
+        read -p "Execute? [y/N] " -n 1 -r REPLY
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            eval "$CMD"
+        fi
+    fi
+    exit 0
+fi
 
 # Main loop
 while true; do
