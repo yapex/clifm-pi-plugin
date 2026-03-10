@@ -8,6 +8,17 @@
 
 set -e
 
+# ============== Daemon 配置 ==============
+DAEMON_DIR="/tmp/clifm-pi-daemon"
+PID_FILE="$DAEMON_DIR/pid"
+FIFO_IN="$DAEMON_DIR/in"
+FIFO_OUT="$DAEMON_DIR/out"
+SESSION_FILE="$DAEMON_DIR/session.json"
+IDLE_TIMEOUT=600  # 10 分钟
+
+# 确保目录存在
+mkdir -p "$DAEMON_DIR"
+
 # Colors
 [ -t 1 ] && {
     RESET="$(tput sgr0)"
