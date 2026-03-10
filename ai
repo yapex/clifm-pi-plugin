@@ -126,9 +126,15 @@ command -v pi >/dev/null || { print_error "pi not installed"; exit 1; }
 # Usage helper
 usage() {
     echo "Usage:"
-    echo "  ai file1 file2 解释这些文件"
-    echo "  ai gen 查找所有 .md 文件"
-    echo "  ai -c 解释剪贴板内容"
+    echo "  ai [options] [files] [query]"
+    echo "    file1 file2 解释这些文件"
+    echo "    gen 查找所有 .md 文件"
+    echo "    -c 使用剪贴板内容"
+    echo ""
+    echo "Commands:"
+    echo "  ai --status    查看 daemon 状态"
+    echo "  ai --reset     重置 daemon（清空历史）"
+    echo "  ai --stop      停止 daemon"
     echo ""
     echo "Options:"
     echo "  -c, --clipboard  使用剪贴板内容作为上下文"
@@ -141,6 +147,24 @@ FILES=()
 QUERY=""
 USE_CLIPBOARD=false
 
+# 先检查特殊命令
+case "$1" in
+    --status)
+        get_daemon_status
+        exit 0
+        ;;
+    --reset)
+        stop_daemon
+        print_info "Daemon 已重置"
+        exit 0
+        ;;
+    --stop)
+        stop_daemon
+        exit 0
+        ;;
+esac
+
+# 然后解析参数
 while [ $# -gt 0 ]; do
     case "$1" in
         gen)       MODE="gen"; QUERY="${*:2}"; break ;;
