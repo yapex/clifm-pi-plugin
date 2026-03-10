@@ -96,20 +96,25 @@ stop_daemon() {
 
 # 获取 daemon 状态
 get_daemon_status() {
-    if is_daemon_alive; then
-        local pid messages idle last_activity now
-        pid=$(cat "$PID_FILE")
-        messages=$(jq -r '.messages // 0' "$SESSION_FILE" 2>/dev/null || echo 0)
+    if [ -f "$DAEMON_DIR/session.jsonl" ]; then
+        # 检查会话文件是否有活动
+        local last_activity msg_count
         last_activity=$(jq -r '.last_activity // 0' "$SESSION_FILE" 2>/dev/null || echo 0)
-        now=$(date +%s)
-        idle=$((now - last_activity))
-        local idle_min=$((idle / 60))
+        msg_count=$(jq -r '.messages // 0' "$SESSION_FILE" 2>/dev/null || echo 0)
         
-        echo "Daemon: running (PID: $pid)"
-        echo "Messages: $messages"
-        echo "Idle: ${idle_min}m"
+        if [ "$last_activity" != "0" ] && [ -n "$last_activity" ]; then
+            local now idle_min
+            now=$(date +%s)
+            idle_min=$(( (now - last_activity) / 60 ))
+            echo "Session: active"
+            echo "Messages: $msg_count"
+            echo "Idle: ${idle_min}m"
+            echo "Session file: $DAEMON_DIR/session.jsonl"
+        else
+            echo "Session: exists but not active"
+        fi
     else
-        echo "Daemon: not running"
+        echo "Session: no session file"
     fi
 }
 
@@ -259,35 +264,85 @@ rm -f "$TEMP_PROMPT"
 
 # ============== 主流程 ==============
 
-# 检查会话文件是否存在（daemon 模式）
+# 检查会话文件是否存在
 if [ -f "$SESSION_FILE" ]; then
     print_info "继续已有会话..."
-    USE_CONTINUE="--continue"
+    USE_SESSION="--session $DAEMON_DIR/session.jsonl"
 else
     print_info "创建新会话..."
-    USE_CONTINUE=""
+    # 使用 --session 让 pi 保存会话到指定文件
+    USE_SESSION="--session $DAEMON_DIR/session.jsonl"
 fi
 
 # 构建 pi 命令
 [ "$MODE" = "gen" ] && PI_ARGS="--mode rpc --thinking off --no-tools" || PI_ARGS="--mode rpc --thinking off --tools read"
-SESSION_ARGS="--session $DAEMON_DIR/session.jsonl"
 
-# 发送请求并读取响应
-RESPONSE=$(jq -n -c --arg q "$MSG" '{"type":"prompt","message":$q}' | pi $PI_ARGS $SESSION_ARGS $USE_CONTINUE 2>&1)
+# 创建临时 FIFO
+FIFO_DIR=$(mktemp -d)
+trap 'rm -rf "$FIFO_DIR"' EXIT
+mkfifo "$FIFO_DIR/pi_in" "$FIFO_DIR/pi_out"
+
+# 启动 pi 进程
+pi $PI_ARGS $USE_SESSION < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
+PI_PID=$!
+
+# 发送请求
+exec 3>"$FIFO_DIR/pi_in"
+jq -n -c --arg q "$MSG" '{"type":"prompt","message":$q}' >&3
+exec 3>&-
+
+# 读取响应
+RESPONSE=""
+spin='⣾⣽⣻⢿⡿⣟⣯'
+i=0
+
+while IFS= read -r line; do
+    printf '%s' "$line" | jq -e . >/dev/null 2>&1 || continue
+    
+    case "$(printf '%s' "$line" | jq -r '.type')" in
+        "tool_execution_start")
+            printf "\r🔧 %s" "$(printf '%s' "$line" | jq -r '.toolName')"
+            ;;
+        "tool_execution_end")
+            printf "\r✓\n"
+            ;;
+        "message_update")
+            delta_type=$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type')
+            case "$delta_type" in
+                "text_delta")
+                    delta_text=$(printf '%s' "$line" | jq -j '.assistantMessageEvent.partial.content[0].text' 2>/dev/null)
+                    RESPONSE="${RESPONSE}${delta_text}"
+                    i=$(( (i + 1) % ${#spin} ))
+                    printf "\r\033[90m[%s] %d chars\033[0m" "${spin:$i:1}" "${#RESPONSE}"
+                    ;;
+                "text_start")
+                    printf "\r\033[90m[开始...]\033[0m"
+                    ;;
+            esac
+            ;;
+        "agent_end")
+            printf "\r\033[K"
+            # 从 agent_end 事件中提取文本
+            RESPONSE=$(printf '%s' "$line" | jq -r '[.messages[-1].content[] | select(.type == "text") | .text] | join("")' 2>/dev/null)
+            [ -z "$RESPONSE" ] || [ "$RESPONSE" = "null" ] && RESPONSE=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text' 2>/dev/null)
+            break
+            ;;
+    esac
+done < "$FIFO_DIR/pi_out"
+
+# 清理 pi 进程
+kill $PI_PID 2>/dev/null || true
+
+echo ""
 
 # 更新会话活动时间
 if [ -f "$DAEMON_DIR/session.jsonl" ]; then
-    echo "{\"messages\":1,\"last_activity\":$(date +%s)}" > "$SESSION_FILE"
+    msg_count=$(jq -r '.messages // 0' "$SESSION_FILE" 2>/dev/null || echo 0)
+    echo "{\"messages\":$((msg_count + 1)),\"last_activity\":$(date +%s)}" > "$SESSION_FILE"
 fi
 
 # 检查响应
 [ -z "$RESPONSE" ] && { print_error "无响应"; exit 1; }
-
-# 解析 JSON 响应，提取文本内容
-RESPONSE=$(echo "$RESPONSE" | jq -r 'last.messages[] | select(.role == "assistant") | .content[] | select(.type == "text") | .text' 2>/dev/null | tr '\n' ' ')
-
-# 检查解析后的响应
-[ -z "$RESPONSE" ] && { print_error "无法解析响应"; exit 1; }
 
 # Output
 
