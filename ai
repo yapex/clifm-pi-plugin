@@ -289,10 +289,9 @@ rm -f "$TEMP_PROMPT"
 # 检查会话文件是否存在
 if [ -f "$SESSION_FILE" ]; then
     print_info "继续已有会话..."
-    USE_SESSION="--session $DAEMON_DIR/session.jsonl"
+    USE_SESSION="--session $DAEMON_DIR/session.jsonl --continue"
 else
     print_info "创建新会话..."
-    # 使用 --session 让 pi 保存会话到指定文件
     USE_SESSION="--session $DAEMON_DIR/session.jsonl"
 fi
 
