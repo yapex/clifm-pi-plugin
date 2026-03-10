@@ -257,17 +257,28 @@ fi
 MSG=$(cat "$TEMP_PROMPT")
 rm -f "$TEMP_PROMPT"
 
-# Start pi
-FIFO_DIR=$(mktemp -d)
-trap 'kill $PI_PID 2>/dev/null; rm -rf "$FIFO_DIR"' EXIT
-mkfifo "$FIFO_DIR/pi_in" "$FIFO_DIR/pi_out"
+# ============== 主流程 ==============
 
-[ "$MODE" = "gen" ] && PI_ARGS="--thinking off --no-tools" || PI_ARGS="--thinking off --tools read"
-pi --mode rpc $PI_ARGS < "$FIFO_DIR/pi_in" > "$FIFO_DIR/pi_out" 2>&1 &
-PI_PID=$!
+# 检查或启动 daemon
+if is_daemon_alive; then
+    print_info "使用现有 daemon..."
+else
+    print_info "启动新 daemon..."
+    start_daemon
+fi
 
-exec 3>"$FIFO_DIR/pi_in"
-exec 4<"$FIFO_DIR/pi_out"
+# 检查 FIFO 是否存在
+if [ ! -p "$FIFO_IN" ] || [ ! -p "$FIFO_OUT" ]; then
+    print_error "FIFO 不可用，请重试"
+    exit 1
+fi
+
+# 更新活动时间
+update_activity
+
+# 发送请求
+exec 3>"$FIFO_IN"
+exec 4<"$FIFO_OUT"
 
 jq -n -c --arg q "$MSG" '{"type":"prompt","message":$q}' >&3
 
