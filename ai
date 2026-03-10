@@ -259,70 +259,37 @@ rm -f "$TEMP_PROMPT"
 
 # ============== 主流程 ==============
 
-# 检查或启动 daemon
-if is_daemon_alive; then
-    print_info "使用现有 daemon..."
+# 检查会话文件是否存在（daemon 模式）
+if [ -f "$SESSION_FILE" ]; then
+    print_info "继续已有会话..."
+    USE_CONTINUE="--continue"
 else
-    print_info "启动新 daemon..."
-    start_daemon
+    print_info "创建新会话..."
+    USE_CONTINUE=""
 fi
 
-# 检查 FIFO 是否存在
-if [ ! -p "$FIFO_IN" ] || [ ! -p "$FIFO_OUT" ]; then
-    print_error "FIFO 不可用，请重试"
-    exit 1
+# 构建 pi 命令
+[ "$MODE" = "gen" ] && PI_ARGS="--mode rpc --thinking off --no-tools" || PI_ARGS="--mode rpc --thinking off --tools read"
+SESSION_ARGS="--session $DAEMON_DIR/session.jsonl"
+
+# 发送请求并读取响应
+RESPONSE=$(jq -n -c --arg q "$MSG" '{"type":"prompt","message":$q}' | pi $PI_ARGS $SESSION_ARGS $USE_CONTINUE 2>&1)
+
+# 更新会话活动时间
+if [ -f "$DAEMON_DIR/session.jsonl" ]; then
+    echo "{\"messages\":1,\"last_activity\":$(date +%s)}" > "$SESSION_FILE"
 fi
 
-# 更新活动时间
-update_activity
-
-# 发送请求
-exec 3>"$FIFO_IN"
-exec 4<"$FIFO_OUT"
-
-jq -n -c --arg q "$MSG" '{"type":"prompt","message":$q}' >&3
-
-# Read response
-RESPONSE=""
-spin='⣾⣽⣻⢿⡿⣟⣯⣷'
-i=0
-
-while IFS= read -r -t 30 line <&4; do
-    printf '%s' "$line" | jq -e . >/dev/null 2>&1 || continue
-    
-    case "$(printf '%s' "$line" | jq -r '.type')" in
-        "tool_execution_start")
-            printf "\r🔧 %s" "$(printf '%s' "$line" | jq -r '.toolName')"
-            ;;
-        "tool_execution_end")
-            printf "\r✓\n"
-            ;;
-        "message_update")
-            delta_type=$(printf '%s' "$line" | jq -r '.assistantMessageEvent.type')
-            case "$delta_type" in
-                "text_delta")
-                    delta_text=$(printf '%s' "$line" | jq -j '.assistantMessageEvent.partial.content[0].text')
-                    RESPONSE="${RESPONSE}${delta_text}"
-                    i=$(( (i + 1) % ${#spin} ))
-                    printf "\r\033[90m[%s] %d chars\033[0m" "${spin:$i:1}" "${#RESPONSE}"
-                    ;;
-                "text_start")
-                    printf "\r\033[90m[开始...]\033[0m"
-                    ;;
-            esac
-            ;;
-        "agent_end")
-            printf "\r\033[K"
-            RESPONSE=$(printf '%s' "$line" | jq -r '[.messages[-1].content[] | select(.type == "text") | .text] | join("")')
-            [ -z "$RESPONSE" ] || [ "$RESPONSE" = "null" ] && RESPONSE=$(printf '%s' "$line" | jq -r '.messages[-1].content[0].text')
-            break
-            ;;
-    esac
-done
-
-echo ""
-
+# 检查响应
 [ -z "$RESPONSE" ] && { print_error "无响应"; exit 1; }
+
+# 解析 JSON 响应，提取文本内容
+RESPONSE=$(echo "$RESPONSE" | jq -r 'last.messages[] | select(.role == "assistant") | .content[] | select(.type == "text") | .text' 2>/dev/null | tr '\n' ' ')
+
+# 检查解析后的响应
+[ -z "$RESPONSE" ] && { print_error "无法解析响应"; exit 1; }
+
+# Output
 
 # Output
 if [ "$MODE" = "gen" ]; then
