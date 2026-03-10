@@ -10,10 +10,16 @@ set -e
 
 # ============== Daemon 配置 ==============
 DAEMON_DIR="/tmp/clifm-pi-daemon"
-PID_FILE="$DAEMON_DIR/pid"
-FIFO_IN="$DAEMON_DIR/in"
-FIFO_OUT="$DAEMON_DIR/out"
 SESSION_FILE="$DAEMON_DIR/session.json"
+# 根据当前目录生成会话文件名（使用目录路径的 MD5）
+get_session_file() {
+    local dir_escaped
+    dir_escaped=$(echo "$PWD" | tr '/' '_')
+    echo "$DAEMON_DIR/session-${dir_escaped}.jsonl"
+}
+
+# 会话文件名（基于当前目录）
+SESSION_FILEL=$(get_session_file)
 IDLE_TIMEOUT=600  # 10 分钟
 
 # 确保目录存在
@@ -67,7 +73,7 @@ start_daemon() {
     echo "$pid" > "$PID_FILE"
     
     # 初始化会话文件
-    echo "{\"messages\":0,\"last_activity\":$(date +%s)}" > "$SESSION_FILE"
+    echo "{\"cwd\":\"$PWD\",\"messages\":0,\"last_activity\":$(date +%s)}" > "$SESSION_FILE"
     
     # 等待 daemon 准备好
     sleep 1
@@ -91,12 +97,12 @@ stop_daemon() {
             print_info "Daemon 已停止"
         fi
     fi
-    rm -f "$PID_FILE" "$FIFO_IN" "$FIFO_OUT" "$SESSION_FILE"
+    rm -f "$PID_FILE" "$FIFO_IN" "$FIFO_OUT" "$SESSION_FILE" "$SESSION_FILEL"
 }
 
 # 获取 daemon 状态
 get_daemon_status() {
-    if [ -f "$DAEMON_DIR/session.jsonl" ]; then
+    if [ -f "$SESSION_FILEL" ]; then
         # 检查会话文件是否有活动
         local last_activity msg_count
         last_activity=$(jq -r '.last_activity // 0' "$SESSION_FILE" 2>/dev/null || echo 0)
@@ -106,10 +112,10 @@ get_daemon_status() {
             local now idle_min
             now=$(date +%s)
             idle_min=$(( (now - last_activity) / 60 ))
-            echo "Session: active"
+            echo "Session: active (directory: $PWD)"
             echo "Messages: $msg_count"
             echo "Idle: ${idle_min}m"
-            echo "Session file: $DAEMON_DIR/session.jsonl"
+            echo "Session file: $SESSION_FILEL"
         else
             echo "Session: exists but not active"
         fi
@@ -121,7 +127,7 @@ get_daemon_status() {
 # 清理旧消息，只保留最近 N 条
 cleanup_old_messages() {
     local max_messages=3
-    local session_file="$DAEMON_DIR/session.jsonl"
+    local session_file="$SESSION_FILEL"
     
     [ -f "$session_file" ] || return
     
@@ -146,6 +152,19 @@ cleanup_old_messages() {
         } > "$session_file"
     fi
 }
+
+# 检查目录匹配的函数（现在不需要了，因为每个目录有独立会话）
+# check_session_dir() {
+#     local session_cwd
+#     session_cwd=$(jq -r '.cwd // ""' "$SESSION_FILE" 2>/dev/null)
+#     
+#     if [ -n "$session_cwd" ] && [ "$session_cwd" != "$PWD" ]; then
+#         print_info "目录已切换 ($session_cwd → $PWD)，创建新会话..."
+#         rm -f "$DAEMON_DIR/session.jsonl" "$SESSION_FILE"
+#         return 1
+#     fi
+#     return 0
+# }
 
 # Check dependencies
 command -v pi >/dev/null || { print_error "pi not installed"; exit 1; }
@@ -286,13 +305,13 @@ rm -f "$TEMP_PROMPT"
 
 # ============== 主流程 ==============
 
-# 检查会话文件是否存在
-if [ -f "$SESSION_FILE" ]; then
+# 检查会话文件是否存在（基于当前目录）
+if [ -f "$SESSION_FILEL" ]; then
     print_info "继续已有会话..."
-    USE_SESSION="--session $DAEMON_DIR/session.jsonl --continue"
+    USE_SESSION="--session $SESSION_FILEL --continue"
 else
     print_info "创建新会话..."
-    USE_SESSION="--session $DAEMON_DIR/session.jsonl"
+    USE_SESSION="--session $SESSION_FILEL"
 fi
 
 # 构建 pi 命令
@@ -357,9 +376,9 @@ kill $PI_PID 2>/dev/null || true
 echo ""
 
 # 更新会话活动时间
-if [ -f "$DAEMON_DIR/session.jsonl" ]; then
+if [ -f "$SESSION_FILEL" ]; then
     msg_count=$(jq -r '.messages // 0' "$SESSION_FILE" 2>/dev/null || echo 0)
-    echo "{\"messages\":$((msg_count + 1)),\"last_activity\":$(date +%s)}" > "$SESSION_FILE"
+    echo "{\"cwd\":\"$PWD\",\"messages\":$((msg_count + 1)),\"last_activity\":$(date +%s)}" > "$SESSION_FILE"
     # 清理旧消息，只保留最近 3 条
     cleanup_old_messages
 fi
