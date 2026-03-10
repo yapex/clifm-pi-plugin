@@ -118,11 +118,33 @@ get_daemon_status() {
     fi
 }
 
-# 更新会话活动时间
-update_activity() {
+# 清理旧消息，只保留最近 N 条
+cleanup_old_messages() {
+    local max_messages=3
+    local session_file="$DAEMON_DIR/session.jsonl"
+    
+    [ -f "$session_file" ] || return
+    
+    # 计算消息数量（type="message" 的行数）
     local msg_count
-    msg_count=$(jq -r '.messages // 0' "$SESSION_FILE" 2>/dev/null || echo 0)
-    echo "{\"messages\":$((msg_count + 1)),\"last_activity\":$(date +%s)}" > "$SESSION_FILE"
+    msg_count=$(grep -c '"type":"message"' "$session_file" 2>/dev/null || echo 0)
+    
+    # 如果超过限制，保留最近的 N 条
+    if [ "$msg_count" -gt "$max_messages" ]; then
+        # 提取前 N 条消息（session 开始信息 + 最近 N 条消息）
+        local session_line
+        session_line=$(head -1 "$session_file" | grep '"type":"session"')
+        
+        # 获取最后 N 条消息
+        local last_messages
+        last_messages=$(grep '"type":"message"' "$session_file" | tail -n "$max_messages")
+        
+        # 重写文件
+        {
+            echo "$session_line"
+            echo "$last_messages"
+        } > "$session_file"
+    fi
 }
 
 # Check dependencies
@@ -339,6 +361,8 @@ echo ""
 if [ -f "$DAEMON_DIR/session.jsonl" ]; then
     msg_count=$(jq -r '.messages // 0' "$SESSION_FILE" 2>/dev/null || echo 0)
     echo "{\"messages\":$((msg_count + 1)),\"last_activity\":$(date +%s)}" > "$SESSION_FILE"
+    # 清理旧消息，只保留最近 3 条
+    cleanup_old_messages
 fi
 
 # 检查响应
